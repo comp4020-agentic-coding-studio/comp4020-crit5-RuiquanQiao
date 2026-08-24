@@ -14,6 +14,15 @@ import {
   scoreFor,
 } from "./game";
 import {
+  IMPACT_BLOCK,
+  IMPACT_FIGURE,
+  IMPACT_KICKED,
+  easeOutBack,
+  easeOutCubic,
+  ring as ringCurve,
+  smoothing,
+} from "./motion";
+import {
   BACKDROP_BOTTOM,
   BACKDROP_TOP,
   type Point,
@@ -56,6 +65,19 @@ let current: Platform;
 let next: Platform;
 let previous: Platform | null = null;
 
+/**
+ * The blocks worth drawing, oldest first, ending with `current` and `next`.
+ *
+ * Three was not enough. The camera frames the pair you are jumping between, so
+ * the block two back is still partly on screen when it gets dropped, and it
+ * vanished mid-pan. Four keeps the discarded one off screen by the time it
+ * goes.
+ */
+let trail: Platform[] = [];
+const TRAIL = 4;
+/** When each block first existed, so a new one can arrive rather than appear. */
+const bornAt = new Map<number, number>();
+
 let phase: Phase = "ready";
 let score = 0;
 let best = 0;
@@ -74,6 +96,8 @@ let settleFrom: Point | null = null;
 let settleStarted = 0;
 let impactStarted = -1;
 let releaseStarted = -1;
+/** The piece's stretch at the instant of contact, decayed away rather than cut. */
+let squashAtImpact = 0;
 let pop: Pop | null = null;
 
 /** Where the figure's feet are, in unscaled projected space. */
@@ -83,6 +107,7 @@ let topple = 0;
 
 let cam: Point = { x: 0, y: 0 };
 let camReady = false;
+let lastFrame = -1;
 
 /** Set once the player has taken their first jump; kills the attract hop. */
 let hasPlayed = false;
@@ -134,6 +159,11 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
   current = firstPlatform(random);
   next = nextPlatform(current, random);
   previous = null;
+  trail = [current, next];
+  bornAt.clear();
+  // The opening pair is simply there. Only blocks generated during a run
+  // animate in, or the first thing a player sees is furniture assembling.
+  for (const block of trail) bornAt.set(block.id, Number.NEGATIVE_INFINITY);
   phase = "ready";
   score = 0;
   streak = 0;
@@ -143,6 +173,8 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
   figureSquash = 0;
   impactStarted = -1;
   releaseStarted = -1;
+  squashAtImpact = 0;
+  lastFrame = -1;
   spin = 0;
   topple = 0;
   flight = null;
@@ -206,6 +238,7 @@ function land(now: number, landing: Landing): void {
     settleFrom = foot;
     settleStarted = now;
     impactStarted = now;
+    squashAtImpact = figureSquash;
     phase = "settling";
     streak = 0;
     return;
@@ -219,25 +252,23 @@ function land(now: number, landing: Landing): void {
   previous = current;
   current = next;
   next = nextPlatform(current, random);
+  bornAt.set(next.id, now);
+  trail.push(next);
+  if (trail.length > TRAIL) {
+    const dropped = trail.shift();
+    if (dropped) bornAt.delete(dropped.id);
+  }
+
   settleFrom = foot;
   settleStarted = now;
   impactStarted = now;
+  squashAtImpact = figureSquash;
   phase = "settling";
 }
 
-/**
- * A damped bounce. 1 at the moment of impact, ringing out inside about 0.6s.
- *
- * This is the whole difference between landing on a crate and landing on a
- * gum drop: a single ease back to rest reads as rigid however soft the colours
- * are, because nothing overshoots. The cosine crosses zero and goes negative,
- * so the block flattens, springs past its own height, and settles.
- */
+/** The impact bounce, silenced when the player has asked for less movement. */
 function ring(sinceMs: number): number {
-  if (sinceMs < 0 || reduceMotion.matches) return 0;
-  const t = sinceMs / 1000;
-  if (t > 0.62) return 0;
-  return Math.exp(-t * 9.5) * Math.cos(t * 33);
+  return reduceMotion.matches ? 0 : ringCurve(sinceMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -270,12 +301,17 @@ function step(now: number): void {
   }
 
   if (phase === "settling") {
-    const t = Math.min((now - settleStarted) / 160, 1);
+    // Eased, and slower than it was: the piece slides at most 29 world units
+    // back to centre while the camera pans a whole gap, and a linear 160ms
+    // slide finished long before the pan did, which read as two separate
+    // movements rather than one.
+    const t = Math.min((now - settleStarted) / 260, 1);
+    const e = easeOutCubic(t);
     const home = iso(current.x, current.z);
     const from = settleFrom ?? home;
     foot = {
-      x: from.x + (home.x - from.x) * t,
-      y: from.y + (home.y - from.y) * t,
+      x: from.x + (home.x - from.x) * e,
+      y: from.y + (home.y - from.y) * e,
     };
     if (t >= 1) phase = "ready";
   }
@@ -314,18 +350,29 @@ function step(now: number): void {
     figureSquash = charge;
   } else if (phase !== "flying") {
     const bounce = ring(now - impactStarted);
-    blockSquash = bounce * 0.6;
-    figureSquash = bounce * 0.85;
+    blockSquash = bounce * IMPACT_BLOCK;
+    // The piece arrives stretched. Decaying that away as the bounce ramps in
+    // keeps the shape continuous across the frame of contact; cutting straight
+    // to the bounce popped it from -0.32 to 0 in one frame.
+    const carry =
+      impactStarted < 0 ? 0 : squashAtImpact * Math.exp(-((now - impactStarted) / 1000) * 26);
+    figureSquash = carry + bounce * IMPACT_FIGURE;
   } else {
     blockSquash = 0;
   }
+
+  // Exponential smoothing on elapsed time, not on frames. As a per-frame
+  // constant this panned 2.4x faster on a 144Hz screen than on a 60Hz one,
+  // which is a different game depending on the monitor it is marked on.
+  const dt = lastFrame < 0 ? 0 : Math.min((now - lastFrame) / 1000, 0.1);
+  lastFrame = now;
 
   const target = cameraTarget();
   if (!camReady) {
     cam = target;
     camReady = true;
   } else {
-    const k = reduceMotion.matches ? 1 : 0.14;
+    const k = reduceMotion.matches ? 1 : smoothing(dt, 9);
     cam = { x: cam.x + (target.x - cam.x) * k, y: cam.y + (target.y - cam.y) * k };
   }
 }
@@ -342,14 +389,26 @@ function draw(now: number): void {
   ctx.scale(scale, scale);
 
   // Far to near, so the near blocks overlap the far ones.
-  const blocks = [previous, current, next].filter((p): p is Platform => p !== null);
-  blocks.sort((a, b) => b.x + b.z - (a.x + a.z));
+  const blocks = [...trail].sort((a, b) => b.x + b.z - (a.x + a.z));
   // The block you pushed off springs back too, a third as hard.
-  const kicked = ring(now - releaseStarted) * 0.35;
+  const kicked = ring(now - releaseStarted) * IMPACT_KICKED;
   for (const block of blocks) {
     const deform =
       block === current ? blockSquash : block === previous ? kicked : 0;
+
+    // A block generated mid-run rises into place instead of appearing. The
+    // camera frames the pair you are jumping between, so a newly generated
+    // target is always already on screen — without this it materialises.
+    const age = (now - (bornAt.get(block.id) ?? Number.NEGATIVE_INFINITY)) / 300;
+    if (age >= 1 || reduceMotion.matches) {
+      drawPlatform(ctx, block, deform);
+      continue;
+    }
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, Math.max(0, age * 1.8));
+    ctx.translate(0, (1 - easeOutBack(Math.max(0, age))) * 30);
     drawPlatform(ctx, block, deform);
+    ctx.restore();
   }
 
   // Standing on a block that is being squeezed means going down with it. The
@@ -485,6 +544,12 @@ Object.defineProperty(window, "__jump", {
         viewport: [width, height],
         gap: gapBetween(current, next),
         charge,
+        blockSquash,
+        figureSquash,
+        // What the block's top face is doing. This is the number that used to
+        // teleport on contact, so it is the one worth being able to sample.
+        sink: grounded() ? sinkOf(current, blockSquash) : 0,
+        blocks: trail.length,
       };
     },
     /** Drive a jump without a pointer, for measuring rather than playing. */

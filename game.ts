@@ -25,6 +25,10 @@ export const MIN_GAP = 96;
 /** Furthest the next platform is ever placed — always reachable at full charge. */
 export const MAX_GAP = 300;
 
+/** Drawn height of a block. Varies for looks; nothing reads it as a rule. */
+export const MIN_HEIGHT = 42;
+export const MAX_HEIGHT = 68;
+
 /** The two isometric directions the run can turn. */
 export type Axis = "x" | "z";
 
@@ -101,7 +105,7 @@ export function firstPlatform(random: () => number): Platform {
     id: 0,
     x: 0,
     z: 0,
-    height: 42 + Math.floor(random() * 26),
+    height: MIN_HEIGHT + Math.floor(random() * (MAX_HEIGHT - MIN_HEIGHT)),
     axis: random() < 0.5 ? "x" : "z",
   };
 }
@@ -116,7 +120,7 @@ export function nextPlatform(from: Platform, random: () => number): Platform {
     id: from.id + 1,
     x: from.axis === "x" ? from.x + gap : from.x,
     z: from.axis === "z" ? from.z + gap : from.z,
-    height: 42 + Math.floor(random() * 26),
+    height: MIN_HEIGHT + Math.floor(random() * (MAX_HEIGHT - MIN_HEIGHT)),
     axis: random() < 0.5 ? "x" : "z",
   };
 }
