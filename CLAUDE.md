@@ -47,9 +47,19 @@ These are the ones that have already caught something. They come forward.
 - **Never link a font or asset CDN.** CI's linkinator walks outbound URLs in
   `dist/`, and an external host that 403s automated requests fails the check and
   blocks the deploy.
-- **`prefers-reduced-motion` drops decoration, never feedback.** Here the impact
-  ring, the spin and the spawn animation go; the charge squash stays, because
-  it is how you read how far the next jump goes.
+- **`prefers-reduced-motion` means less motion, not instant.** Instant is the
+  most jarring option there is: the first version of this snapped the camera a
+  whole gap in one frame, which is the exact discontinuity the full path had
+  just been rebuilt to remove. Position still animates — arc, settle, camera
+  glide. Rotation and elastic overshoot go. And it never removes *feedback* or
+  *teaching*: the charge squash stays because it is how you read the next jump,
+  and the attract hop stays because it is the only thing that teaches the game.
+  An accessibility setting must not take the tutorial away.
+- **Check the effective setting before believing what you see.** The preview
+  browser here has reduce-motion on. Every animation in this repo was being
+  rendered through the degraded path for a whole session before that surfaced.
+  `window.__jump.motion` reports it and `setMotion('full'|'reduced'|'auto')`
+  forces either path.
 - **`git config core.hooksPath .githooks` after every fresh clone.** The
   template's `prepare` script fails silently on Windows, so the hook that blocks
   committing a key is not installed until you do this by hand.
@@ -77,6 +87,20 @@ These are the ones that have already caught something. They come forward.
 - **No instructions anywhere, on screen or off** — including `README.md`, which
   the brief names explicitly. The opening screen's attract hop is the tutorial:
   the piece compresses and springs in place until the first real jump.
+- **Draw the piece in the depth order, not on top.** Depth on the ground plane
+  is `x + z`; blocks at least as far away as the piece go first, nearer ones
+  after. Drawn last, an overshooting piece sails across the front of the block
+  it just flew *behind*.
+- **To see motion, use `window.__jump.shoot()`.** A screenshot of a running
+  game is one pose, and the pane throttles `requestAnimationFrame` to about
+  1fps, so neither tool can show an animation. `shoot(name, holdMs, opts)`
+  drives the real `step`/`draw` off a virtual clock, lays a whole jump out as a
+  labelled grid on the canvas at an explicit pixel size, and posts it to the
+  dev server, which writes `.frames/<name>.png`. A canvas draws into its
+  backing store whether or not the page is composited, so this works with the
+  pane closed — which is when it is needed. `cols: 1, rows: 1, w: 390, h: 844`
+  gives a true phone frame. The `/__frame` middleware is `apply: "serve"` and
+  never ships.
 - **Read state from `window.__jump`, not from screenshots.** It exposes phase,
   score, streak, scale, viewport, gap, charge, both squash values, the current
   sink and the trail length, plus `hold(ms)` to drive a jump without a pointer

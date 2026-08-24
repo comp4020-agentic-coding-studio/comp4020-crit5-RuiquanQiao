@@ -49,7 +49,27 @@ import {
 const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
 const ctx = canvas.getContext("2d")!;
 
-const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const reduceMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+/** "auto" follows the OS. The other two exist so both paths can be inspected. */
+let motionMode: "auto" | "full" | "reduced" = "auto";
+
+/**
+ * What reduced motion means here.
+ *
+ * Not "instant". Instant is the most jarring option there is — the first
+ * version of this snapped the camera a whole gap in one frame, which is
+ * exactly the discontinuity the full path was rebuilt to remove. So *position*
+ * still animates: the arc, the settle, the camera glide. What goes is rotation
+ * and elastic overshoot — the somersault, the impact ring, the block arriving
+ * with a bounce — which are the parts that actually trigger anyone.
+ *
+ * And the attract hop stays. It is the only thing that teaches the game, and an
+ * accessibility setting must not take the tutorial away; it just loses its
+ * spring and becomes a compression.
+ */
+function reduced(): boolean {
+  return motionMode === "auto" ? reduceMotionQuery.matches : motionMode === "reduced";
+}
 
 type Phase = "ready" | "charging" | "flying" | "settling" | "falling" | "over";
 
@@ -372,7 +392,7 @@ function land(now: number, landing: Landing): void {
 
 /** The impact bounce, silenced when the player has asked for less movement. */
 function ring(sinceMs: number): number {
-  return reduceMotion.matches ? 0 : ringCurve(sinceMs);
+  return reduced() ? 0 : ringCurve(sinceMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -400,12 +420,10 @@ function step(now: number): void {
     airHeight = arcAt(flight.range, t);
     // One somersault, in the vertical plane the piece is actually travelling
     // through — which is diagonal on screen for both isometric axes.
-    up = reduceMotion.matches
-      ? UPRIGHT
-      : tumbleUp(flight.dx, flight.dz, t * Math.PI * 2);
+    up = reduced() ? UPRIGHT : tumbleUp(flight.dx, flight.dz, t * Math.PI * 2);
     // Stretched leaving the block and again on the way down, neutral at the
     // apex — the other half of squash-and-stretch.
-    figureSquash = reduceMotion.matches ? 0 : -0.32 * Math.abs(Math.cos(t * Math.PI));
+    figureSquash = reduced() ? 0 : -0.32 * Math.abs(Math.cos(t * Math.PI));
     if (t >= 1) {
       land(now, flight.landing);
       flight = null;
@@ -444,9 +462,14 @@ function step(now: number): void {
       // it moves the piece down the screen. Same gravity as the arc.
       y: falling.at.y + falling.drift.y * tau - fallAt(falling.range, tau),
     };
-    up = reduceMotion.matches
-      ? UPRIGHT
-      : tumbleUp(falling.dx, falling.dz, falling.theta0 + falling.omega * tau);
+    // A piece that has missed is falling whatever the setting: keeping it
+    // primly upright as it drops off the world is not less motion, it is a
+    // different and worse story about what just happened.
+    up = tumbleUp(
+      falling.dx,
+      falling.dz,
+      falling.theta0 + falling.omega * tau * (reduced() ? 0.4 : 1),
+    );
     figureSquash = 0;
     if (tau > 1.1) phase = "over";
   }
@@ -454,12 +477,12 @@ function step(now: number): void {
   // The attract hop: with nothing on screen but a figure and a block, the one
   // thing the opening has to say is that the figure compresses and springs.
   // It says it by doing it, and only until the first jump.
-  if (phase === "ready" && !hasPlayed && !reduceMotion.matches) {
+  if (phase === "ready" && !hasPlayed) {
     if (hopStarted === 0) hopStarted = now + 1600;
     const t = (now - hopStarted) / 900;
     if (t >= 0 && t <= 1) {
       charge = t < 0.55 ? (t / 0.55) * 0.8 : 0;
-      const spring = t < 0.55 ? 0 : Math.sin(((t - 0.55) / 0.45) * Math.PI);
+      const spring = t < 0.55 || reduced() ? 0 : Math.sin(((t - 0.55) / 0.45) * Math.PI);
       const home = iso(current.x, current.z);
       foot = { x: home.x, y: home.y - spring * 18 };
       if (t >= 0.55 && impactStarted < hopStarted) impactStarted = hopStarted + 900;
@@ -496,7 +519,7 @@ function step(now: number): void {
   lastFrame = now;
 
   const target = cameraTarget();
-  if (!camReady || reduceMotion.matches) {
+  if (!camReady) {
     cam = target;
     camReady = true;
     landedAt = -1;
@@ -519,40 +542,9 @@ function step(now: number): void {
   cam = { x: cam.x + (target.x - cam.x) * k, y: cam.y + (target.y - cam.y) * k };
 }
 
-function draw(now: number): void {
-  const sky = ctx.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, BACKDROP_TOP);
-  sky.addColorStop(1, BACKDROP_BOTTOM);
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.save();
-  ctx.translate(cam.x, cam.y);
-  ctx.scale(scale, scale);
-
-  // Far to near, so the near blocks overlap the far ones.
-  const blocks = [...trail].sort((a, b) => b.x + b.z - (a.x + a.z));
-  // The block you pushed off springs back too, a third as hard.
-  const kicked = ring(now - releaseStarted) * IMPACT_KICKED;
-  for (const block of blocks) {
-    const deform =
-      block === current ? blockSquash : block === previous ? kicked : 0;
-
-    // A block generated mid-run rises into place instead of appearing. The
-    // camera frames the pair you are jumping between, so a newly generated
-    // target is always already on screen — without this it materialises.
-    const age = (now - (bornAt.get(block.id) ?? Number.NEGATIVE_INFINITY)) / 300;
-    if (age >= 1 || reduceMotion.matches) {
-      drawPlatform(ctx, block, deform);
-      continue;
-    }
-    ctx.save();
-    ctx.globalAlpha = Math.min(1, Math.max(0, age * 1.8));
-    ctx.translate(0, (1 - easeOutBack(Math.max(0, age))) * 30);
-    drawPlatform(ctx, block, deform);
-    ctx.restore();
-  }
-
+/** The shadow and the piece, drawn together so they keep the same depth slot. */
+function drawPiece(now: number): void {
+  void now;
   // Standing on a block that is being squeezed means going down with it. The
   // piece and the top face have to move by the same amount or it wades.
   const sink = grounded() ? sinkOf(current, blockSquash) : 0;
@@ -575,6 +567,59 @@ function draw(now: number): void {
   }
 
   drawFigure(ctx, { foot: standing, squash: figureSquash, up });
+}
+
+function draw(now: number): void {
+  const sky = ctx.createLinearGradient(0, 0, 0, height);
+  sky.addColorStop(0, BACKDROP_TOP);
+  sky.addColorStop(1, BACKDROP_BOTTOM);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.save();
+  ctx.translate(cam.x, cam.y);
+  ctx.scale(scale, scale);
+
+  // Far to near, so the near blocks overlap the far ones.
+  const blocks = [...trail].sort((a, b) => b.x + b.z - (a.x + a.z));
+  // The block you pushed off springs back too, a third as hard.
+  const kicked = ring(now - releaseStarted) * IMPACT_KICKED;
+
+  // The piece belongs in that order too, not on top of it. Overshooting sends
+  // it *past* the target — further from the camera — and drawing it last had
+  // it sail across the front of a block it was behind. Depth along the ground
+  // plane is x+z; anything at least as far away as the piece is drawn first,
+  // and the block it is standing on ties, so that one goes underneath.
+  const pieceDepth = groundX + groundZ;
+  let piecePlaced = false;
+  const placePiece = () => {
+    if (piecePlaced) return;
+    piecePlaced = true;
+    drawPiece(now);
+  };
+
+  for (const block of blocks) {
+    if (block.x + block.z < pieceDepth) placePiece();
+    const deform =
+      block === current ? blockSquash : block === previous ? kicked : 0;
+
+    // A block generated mid-run rises into place instead of appearing. The
+    // camera frames the pair you are jumping between, so a newly generated
+    // target is always already on screen — without this it materialises.
+    const age = (now - (bornAt.get(block.id) ?? Number.NEGATIVE_INFINITY)) / 300;
+    if (age >= 1) {
+      drawPlatform(ctx, block, deform);
+      continue;
+    }
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, Math.max(0, age * 1.8));
+    // Reduced motion keeps the fade and loses the overshooting rise: it still
+    // arrives rather than appearing, without anything springing.
+    if (!reduced()) ctx.translate(0, (1 - easeOutBack(Math.max(0, age))) * 30);
+    drawPlatform(ctx, block, deform);
+    ctx.restore();
+  }
+  placePiece();
 
   if (pop) {
     const t = (now - pop.started) / 700;
@@ -655,14 +700,26 @@ function frame(now: number): void {
  * real `step` and `draw` off a virtual clock, so what a tile shows is what the
  * game does at that millisecond — not a reconstruction of it.
  */
-function filmstrip(holdMs: number, cols = 5, rows = 4, dtMs = 45, seed = 20260831): void {
+function filmstrip(
+  holdMs: number,
+  cols = 5,
+  rows = 4,
+  dtMs = 45,
+  seed = 20260831,
+  pxW = 1500,
+  pxH = 1000,
+): void {
   paused = true;
-  const realW = width;
-  const realH = height;
-  const realScale = scale;
 
-  const cellW = realW / cols;
-  const cellH = realH / rows;
+  // Explicit pixels rather than the element's size. A hidden pane reports a
+  // zero-width canvas, and the whole point of this is to work when the pane is
+  // not there.
+  canvas.width = pxW;
+  canvas.height = pxH;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  const cellW = pxW / cols;
+  const cellH = pxH / rows;
   width = cellW;
   height = cellH;
   scale = fitScale(cellW, cellH);
@@ -673,16 +730,7 @@ function filmstrip(holdMs: number, cols = 5, rows = 4, dtMs = 45, seed = 2026083
   release(t0 + holdMs);
   const start = t0 + holdMs;
 
-  ctx.save();
-  ctx.setTransform(
-    Math.min(window.devicePixelRatio || 1, 2.5),
-    0,
-    0,
-    Math.min(window.devicePixelRatio || 1, 2.5),
-    0,
-    0,
-  );
-  ctx.clearRect(0, 0, realW, realH);
+  ctx.clearRect(0, 0, pxW, pxH);
   for (let i = 0; i < cols * rows; i++) {
     const now = start + i * dtMs;
     step(now);
@@ -692,66 +740,32 @@ function filmstrip(holdMs: number, cols = 5, rows = 4, dtMs = 45, seed = 2026083
     ctx.rect(0, 0, cellW, cellH);
     ctx.clip();
     draw(now);
-    ctx.fillStyle = "rgba(59,63,88,0.5)";
-    ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = "rgba(59,63,88,0.65)";
+    ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "bottom";
-    ctx.fillText(`${i * dtMs}ms ${phase}`, 8, cellH - 6);
-    ctx.strokeStyle = "rgba(59,63,88,0.14)";
+    ctx.fillText(`+${i * dtMs}ms  ${phase}`, 10, cellH - 8);
+    ctx.strokeStyle = "rgba(59,63,88,0.16)";
     ctx.strokeRect(0.5, 0.5, cellW - 1, cellH - 1);
     ctx.restore();
   }
-  ctx.restore();
-
-  width = realW;
-  height = realH;
-  scale = realScale;
 }
 
-// ---------------------------------------------------------------------------
-// Input — one verb, press and release, wherever the pointer is.
-// ---------------------------------------------------------------------------
+/** Render a strip and post it to the dev server, which writes it to .frames/. */
+async function shoot(name: string, holdMs: number, opts: Partial<{
+  cols: number;
+  rows: number;
+  dt: number;
+  seed: number;
+  w: number;
+  h: number;
+}> = {}): Promise<string> {
+  const { cols = 5, rows = 4, dt = 45, seed = 20260831, w = 1500, h = 1000 } = opts;
+  filmstrip(holdMs, cols, rows, dt, seed, w, h);
+  await fetch("/__frame", { method: "POST", body: `${name}|${canvas.toDataURL("image/png")}` });
+  return `.frames/${name}.png`;
+}
 
-canvas.addEventListener("pointerdown", (event) => {
-  event.preventDefault();
-  // Capture so a finger that slides off the canvas still ends its own hold.
-  // It throws for a pointer id the browser does not consider active, and a
-  // throw here would swallow the charge — the jump must not depend on it.
-  try {
-    canvas.setPointerCapture(event.pointerId);
-  } catch {
-    /* not capturable; the window-level listeners below still end the hold */
-  }
-  beginCharge(performance.now());
-});
-
-// On the window, not the canvas: a hold that ends with the pointer somewhere
-// else — dragged off the edge, or over the wordmark — is still a released hold,
-// and a charge that never resolves leaves the piece stuck mid-crouch.
-const endHold = () => release(performance.now());
-window.addEventListener("pointerup", endHold);
-window.addEventListener("pointercancel", endHold);
-
-window.addEventListener("keydown", (event) => {
-  if (event.code !== "Space" || event.repeat) return;
-  event.preventDefault();
-  beginCharge(performance.now());
-});
-window.addEventListener("keyup", (event) => {
-  if (event.code !== "Space") return;
-  event.preventDefault();
-  release(performance.now());
-});
-
-window.addEventListener("resize", fit);
-
-fit();
-reset();
-requestAnimationFrame(frame);
-
-// Read the run's state from here rather than from a screenshot: the preview
-// pane renders at its own physical size, so it lies about 1920x1080 and
-// 390x844. (Sensor carried over from the guzheng.)
 Object.defineProperty(window, "__jump", {
   value: {
     get state() {
@@ -783,6 +797,13 @@ Object.defineProperty(window, "__jump", {
       return (gapBetween(current, next) * MAX_CHARGE_MS) / MAX_DISTANCE;
     },
     filmstrip,
+    shoot,
+    get motion() {
+      return { mode: motionMode, effective: reduced() ? "reduced" : "full" };
+    },
+    setMotion(mode: "auto" | "full" | "reduced") {
+      motionMode = mode;
+    },
     resume() {
       paused = false;
       lastFrame = -1;

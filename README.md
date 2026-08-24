@@ -1,7 +1,8 @@
-# 跳一跳
+# HOP
 
-A remake of the WeChat mini-game, in TypeScript on a canvas, with no
-dependencies at runtime.
+A remake of the WeChat mini-game 跳一跳, in TypeScript on a canvas, with no
+dependencies at runtime and no assets to load — the art is drawn and the sound
+is synthesised.
 
 Live: <https://comp4020-agentic-coding-studio.github.io/comp4020-crit5-RuiquanQiao/>
 
@@ -14,7 +15,8 @@ places that cannot stand in for them. The opening screen is the whole tutorial.
 | file | what it owns |
 |---|---|
 | `game.ts` | the rules. No DOM, no clock. `resolveLanding` is the only place that decides whether a run continues |
-| `motion.ts` | the curves — impact, easing, camera smoothing. Pure, for the same reason |
+| `motion.ts` | the curves and the ballistics — one gravity, one launch angle, everything else derived. Pure, for the same reason |
+| `audio.ts` | the synthesised sound. Unlocked inside a gesture, never at load |
 | `render.ts` | everything that knows about pixels. Imports `game.ts`, and nothing imports it back |
 | `main.ts` | input, the clock and the camera; the only file that knows the other three exist |
 
