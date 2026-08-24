@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WORST_PAIR, fitScale } from "../render";
+import { FIGURE_HEIGHT, WORST_PAIR, fitScale } from "../render";
 
 // A sensor, not a contract test: the two viewports below are the ones the work
 // is marked at, every week, whatever the brief. It stays in the repo when the
@@ -34,10 +34,10 @@ describe("the worst pair of blocks fits both marking viewports", () => {
         expect(height - used).toBeGreaterThan(height * 0.1);
       });
 
-      it("is large enough that the figure is not a speck", () => {
-        // 62 world units of figure; below about 40 device pixels the head
-        // stops reading as a head.
-        expect(62 * scale).toBeGreaterThan(40);
+      it("is large enough that the piece is not a speck", () => {
+        // Below about 40 device pixels the pawn's collar and ball stop
+        // resolving and it reads as a pin.
+        expect(FIGURE_HEIGHT * scale).toBeGreaterThan(40);
       });
     });
   }

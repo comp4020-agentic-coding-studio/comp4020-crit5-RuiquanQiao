@@ -79,9 +79,21 @@ export const BACKDROP_BOTTOM = "#dfe4ee";
 export const SHADOW = "rgba(70, 78, 104, 0.13)";
 
 /**
+ * How hard a block is being squeezed. Positive compresses and spreads it,
+ * negative stretches and narrows it — the two halves of squash-and-stretch,
+ * which is the whole difference between a wooden crate and a gum drop.
+ */
+export function deformOf(squash: number): { wide: number; tall: number } {
+  return { wide: 1 + squash * 0.26, tall: 1 - squash * 0.42 };
+}
+
+/**
  * A block: top face, then the two visible sides. The top is drawn last so its
  * edge sits cleanly over the sides, which is what stops the seams shimmering
  * when the camera pans a fraction of a pixel.
+ *
+ * `squash` spreads the footprint as it flattens the height, so the block bulges
+ * sideways under load instead of merely getting shorter.
  */
 export function drawPlatform(
   ctx: CanvasRenderingContext2D,
@@ -89,18 +101,25 @@ export function drawPlatform(
   squash = 0,
 ): void {
   const [top, right, left] = paletteFor(platform);
-  const half = PLATFORM_SIZE / 2;
-  const height = platform.height * (1 - squash * 0.16);
+  const { wide, tall } = deformOf(squash);
+  const half = (PLATFORM_SIZE / 2) * wide;
+  const height = platform.height * tall;
   const { x, z } = platform;
+
+  // A squeezed block loses height off its top, not off its base — the base is
+  // on the ground. Everything is drawn from the top face down, so the whole
+  // top sinks by whatever height the squash took away.
+  const sink = sinkOf(platform, squash);
 
   // Top face, named by where each corner lands on screen: far is the corner
   // pointing away from the viewer, near is the one pointing at them.
-  const far = iso(x + half, z + half);
-  const rightCorner = iso(x + half, z - half);
-  const near = iso(x - half, z - half);
-  const leftCorner = iso(x - half, z + half);
+  const lift = (p: Point): Point => ({ x: p.x, y: p.y + sink });
+  const far = lift(iso(x + half, z + half));
+  const rightCorner = lift(iso(x + half, z - half));
+  const near = lift(iso(x - half, z - half));
+  const leftCorner = lift(iso(x - half, z + half));
 
-  const face = (points: Point[], fill: string) => {
+  const face = (points: Point[], fill: string | CanvasGradient) => {
     ctx.beginPath();
     ctx.moveTo(points[0]!.x, points[0]!.y);
     for (const p of points.slice(1)) ctx.lineTo(p.x, p.y);
@@ -111,11 +130,81 @@ export function drawPlatform(
 
   const drop = (p: Point): Point => ({ x: p.x, y: p.y + height });
 
-  // The two sides below the near corner are the only ones facing the camera.
-  face([leftCorner, near, drop(near), drop(leftCorner)], left);
-  face([near, rightCorner, drop(rightCorner), drop(near)], right);
-  // Top last, so its edge covers the seams where the sides meet it.
-  face([far, rightCorner, near, leftCorner], top);
+  // Every face is drawn sharp and then clipped to one rounded outline. Rounding
+  // each face on its own leaves a notch where two of them meet; rounding the
+  // silhouette rounds only the corners that are actually corners.
+  ctx.save();
+  roundedPath(
+    ctx,
+    [far, rightCorner, drop(rightCorner), drop(near), drop(leftCorner), leftCorner],
+    CORNER,
+  );
+  ctx.clip();
+
+  const sideLight = (from: Point, colour: string) => {
+    const g = ctx.createLinearGradient(from.x, from.y, from.x, from.y + height);
+    g.addColorStop(0, colour);
+    g.addColorStop(1, shade(colour, -0.14));
+    return g;
+  };
+
+  face([leftCorner, near, drop(near), drop(leftCorner)], sideLight(leftCorner, left));
+  face([near, rightCorner, drop(rightCorner), drop(near)], sideLight(near, right));
+
+  // Top face, lit from the far corner so the block reads as domed.
+  const lit = ctx.createLinearGradient(far.x, far.y, near.x, near.y);
+  lit.addColorStop(0, shade(top, 0.1));
+  lit.addColorStop(1, shade(top, -0.05));
+  face([far, rightCorner, near, leftCorner], lit);
+
+  // The sheen. A sweet catches the light in a soft patch, not along a line.
+  const sheen = ctx.createRadialGradient(
+    far.x - half * ISO_X * 0.4,
+    far.y + PLATFORM_SIZE * ISO_Y * 0.45,
+    2,
+    far.x - half * ISO_X * 0.4,
+    far.y + PLATFORM_SIZE * ISO_Y * 0.45,
+    half * 1.1,
+  );
+  sheen.addColorStop(0, "rgba(255, 255, 255, 0.5)");
+  sheen.addColorStop(1, "rgba(255, 255, 255, 0)");
+  face([far, rightCorner, near, leftCorner], sheen);
+
+  ctx.restore();
+}
+
+/** Corner radius on a block's silhouette. The whole difference from a crate. */
+const CORNER = 8;
+
+/** Nudge a hex colour toward white (positive) or black (negative). */
+function shade(hex: string, amount: number): string {
+  const n = Number.parseInt(hex.slice(1), 16);
+  const mix = (c: number) =>
+    Math.round(amount >= 0 ? c + (255 - c) * amount : c * (1 + amount));
+  return `rgb(${mix((n >> 16) & 255)} ${mix((n >> 8) & 255)} ${mix(n & 255)})`;
+}
+
+/** A closed polygon with every corner rounded to `r`. */
+function roundedPath(ctx: CanvasRenderingContext2D, pts: Point[], r: number): void {
+  const n = pts.length;
+  const mid = (a: Point, b: Point): Point => ({
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+  });
+  const start = mid(pts[0]!, pts[1]!);
+  ctx.beginPath();
+  ctx.moveTo(start.x, start.y);
+  for (let i = 1; i <= n; i++) {
+    const corner = pts[i % n]!;
+    const to = mid(corner, pts[(i + 1) % n]!);
+    ctx.arcTo(corner.x, corner.y, to.x, to.y, r);
+  }
+  ctx.closePath();
+}
+
+/** How far a block's top face drops when it is squeezed by `squash`. */
+export function sinkOf(platform: Platform, squash: number): number {
+  return platform.height * (1 - deformOf(squash).tall);
 }
 
 /**
@@ -154,70 +243,121 @@ export interface Pose {
   readonly topple: number;
 }
 
-const BODY = "#454a68";
-const BODY_LIT = "#5b6183";
-const HEAD = "#f6f3ec";
-const HEAD_SHADE = "#d9d4c8";
+const BODY_TOP = "#6a6f96";
+const BODY_MID = "#4a4f72";
+const BODY_FOOT = "#383c5a";
+const HEAD_LIT = "#fffdf8";
+const HEAD_MID = "#f2ece0";
+const HEAD_SHADE = "#cfc7b7";
 
-/** Standing height of the figure, head included. Roughly a block tall. */
-export const FIGURE_HEIGHT = 62;
+/** Standing height of the piece, ball included. Roughly a block tall. */
+export const FIGURE_HEIGHT = 83;
+const HEAD_Y = -70;
+const HEAD_R = 13;
 
 /**
- * A pawn: rounded base, waist pinched in, a big pale ball on top. The two
- * pieces are drawn separately so the charge can squash the body while the
- * head keeps its size — which is what makes the compression read as effort
- * rather than as the whole figure being scaled down.
+ * The silhouette of a chess pawn, drawn once in its own units: a flared base,
+ * a concave stem, a collar, a bulb and a neck. The ball on top is a separate
+ * circle so it can carry its own light.
+ *
+ * The right-hand profile is written out and then mirrored in reverse, which is
+ * the only way the two sides stay identical when the curves get tuned.
+ */
+function pawnOutline(ctx: CanvasRenderingContext2D): void {
+  ctx.beginPath();
+  // Vertical proportions matter more than the curves: a pawn is about an
+  // eighth base, a third stem, and the rest bulb and ball. An earlier version
+  // gave the base 8% and it read as a person in a coat rather than a piece.
+  ctx.moveTo(22, 0);
+  ctx.quadraticCurveTo(22, -7, 19, -9); // rolled edge of the base
+  ctx.lineTo(13.5, -13); // step up off the base
+  ctx.bezierCurveTo(11.5, -20, 8.4, -26, 8, -31); // stem, waisted hard
+  ctx.lineTo(16, -34); // collar, flared proud of the stem
+  ctx.lineTo(12, -40);
+  ctx.bezierCurveTo(17, -46, 16, -54, 8.5, -57); // bulb
+  ctx.lineTo(7.5, -60); // neck
+  ctx.lineTo(-7.5, -60);
+  ctx.lineTo(-8.5, -57);
+  ctx.bezierCurveTo(-16, -54, -17, -46, -12, -40);
+  ctx.lineTo(-16, -34);
+  ctx.lineTo(-8, -31);
+  ctx.bezierCurveTo(-8.4, -26, -11.5, -20, -13.5, -13);
+  ctx.lineTo(-19, -9);
+  ctx.quadraticCurveTo(-22, -7, -22, 0);
+  ctx.closePath();
+}
+
+/**
+ * The pawn, squashed and stretched about its feet.
+ *
+ * The deformation is uniform — head included — on purpose. Holding the ball at
+ * a constant size reads as a figure crouching; letting it flatten with the rest
+ * reads as something soft being pressed, which is the feel this is after.
  */
 export function drawFigure(ctx: CanvasRenderingContext2D, pose: Pose): void {
   const { foot, squash, spin, topple } = pose;
-  const bodyH = 44 * (1 - squash * 0.4);
-  const baseW = 23 * (1 + squash * 0.34);
-  const shoulderW = 13 * (1 + squash * 0.5);
-  const headR = 12 * (1 + squash * 0.06);
-  const headY = -bodyH - headR * 0.72;
+  const { wide, tall } = deformOf(squash);
 
   ctx.save();
   ctx.translate(foot.x, foot.y);
   if (topple !== 0) ctx.rotate(topple);
-  // Spin happens about the figure's middle, not its feet.
+  // Spin happens about the piece's middle, not its feet.
   if (spin !== 0) {
-    const pivot = (bodyH + headR * 1.7) / 2;
+    const pivot = FIGURE_HEIGHT / 2;
     ctx.translate(0, -pivot);
     ctx.rotate(spin);
     ctx.translate(0, pivot);
   }
+  ctx.scale(wide, tall);
 
-  // Body: rounded foot, waist curving in to narrow shoulders.
-  ctx.beginPath();
-  ctx.moveTo(-baseW / 2, -baseW * 0.16);
-  ctx.quadraticCurveTo(-baseW / 2, -bodyH * 0.62, -shoulderW / 2, -bodyH);
-  ctx.lineTo(shoulderW / 2, -bodyH);
-  ctx.quadraticCurveTo(baseW / 2, -bodyH * 0.62, baseW / 2, -baseW * 0.16);
-  ctx.ellipse(0, -baseW * 0.16, baseW / 2, baseW * 0.3, 0, 0, Math.PI);
-  ctx.closePath();
-  ctx.fillStyle = BODY;
+  // Body, lit from above so the base stays heavy.
+  pawnOutline(ctx);
+  const body = ctx.createLinearGradient(0, -60, 0, 0);
+  body.addColorStop(0, BODY_TOP);
+  body.addColorStop(0.55, BODY_MID);
+  body.addColorStop(1, BODY_FOOT);
+  ctx.fillStyle = body;
   ctx.fill();
 
-  // A lit edge down the left, which is where the backdrop is brightest.
+  // A soft vertical sheen down the left, clipped to the silhouette.
+  // A soft sheen, not a stripe: a flat ellipse at this width reads as a scarf
+  // slung over the piece rather than as light on a curved surface.
   ctx.save();
+  pawnOutline(ctx);
   ctx.clip();
-  ctx.fillStyle = BODY_LIT;
+  const gloss = ctx.createRadialGradient(-6.5, -36, 0, -6.5, -36, 22);
+  gloss.addColorStop(0, "rgba(255, 255, 255, 0.34)");
+  gloss.addColorStop(0.5, "rgba(255, 255, 255, 0.13)");
+  gloss.addColorStop(1, "rgba(255, 255, 255, 0)");
+  ctx.fillStyle = gloss;
   ctx.beginPath();
-  ctx.ellipse(-baseW * 0.26, -bodyH * 0.5, baseW * 0.2, bodyH * 0.42, 0, 0, Math.PI * 2);
+  ctx.ellipse(-6.5, -36, 9, 26, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
-  // Head, with a soft underside so it sits on the shoulders rather than float.
+  // Ball: a lit sphere rather than a flat disc, which is most of the candy.
+  const ball = ctx.createRadialGradient(
+    -HEAD_R * 0.35,
+    HEAD_Y - HEAD_R * 0.4,
+    HEAD_R * 0.15,
+    0,
+    HEAD_Y,
+    HEAD_R * 1.25,
+  );
+  ball.addColorStop(0, HEAD_LIT);
+  ball.addColorStop(0.55, HEAD_MID);
+  ball.addColorStop(1, HEAD_SHADE);
   ctx.beginPath();
-  ctx.arc(0, headY, headR, 0, Math.PI * 2);
-  ctx.fillStyle = HEAD;
+  ctx.arc(0, HEAD_Y, HEAD_R, 0, Math.PI * 2);
+  ctx.fillStyle = ball;
   ctx.fill();
+
+  // The specular dot. Small, and the thing that sells it as a sweet.
   ctx.save();
-  ctx.clip();
-  ctx.globalAlpha = 0.55;
-  ctx.fillStyle = HEAD_SHADE;
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = "#ffffff";
   ctx.beginPath();
-  ctx.arc(headR * 0.35, headY + headR * 0.62, headR * 0.85, 0, Math.PI * 2);
+  ctx.ellipse(-HEAD_R * 0.34, HEAD_Y - HEAD_R * 0.42, 3.0, 2.2, -0.5, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 

@@ -22,6 +22,7 @@ import {
   drawShadow,
   fitScale,
   iso,
+  sinkOf,
 } from "./render";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
@@ -62,11 +63,17 @@ let streak = 0;
 let jumps = 0;
 
 let chargeStart = 0;
-let squash = 0;
+/** 0..1, how full the charge is. Not a deformation — that is derived below. */
+let charge = 0;
+/** Signed squash for the block being stood on, and for the piece itself. */
+let blockSquash = 0;
+let figureSquash = 0;
 let flight: Flight | null = null;
 let fallStarted = 0;
 let settleFrom: Point | null = null;
 let settleStarted = 0;
+let impactStarted = -1;
+let releaseStarted = -1;
 let pop: Pop | null = null;
 
 /** Where the figure's feet are, in unscaled projected space. */
@@ -113,8 +120,9 @@ function cameraTarget(): Point {
   };
 }
 
-function toScreen(p: Point): Point {
-  return { x: p.x * scale + cam.x, y: p.y * scale + cam.y };
+/** True while the piece has its feet on `current` rather than being in the air. */
+function grounded(): boolean {
+  return phase === "ready" || phase === "charging" || phase === "settling";
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +138,11 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
   score = 0;
   streak = 0;
   jumps = 0;
-  squash = 0;
+  charge = 0;
+  blockSquash = 0;
+  figureSquash = 0;
+  impactStarted = -1;
+  releaseStarted = -1;
   spin = 0;
   topple = 0;
   flight = null;
@@ -175,7 +187,8 @@ function release(now: number): void {
   };
 
   phase = "flying";
-  squash = 0;
+  charge = 0;
+  releaseStarted = now;
   hasPlayed = true;
   jumps += 1;
 }
@@ -192,6 +205,7 @@ function land(now: number, landing: Landing): void {
     // A hold too weak to leave the block. Not a loss; slide back to centre.
     settleFrom = foot;
     settleStarted = now;
+    impactStarted = now;
     phase = "settling";
     streak = 0;
     return;
@@ -207,7 +221,23 @@ function land(now: number, landing: Landing): void {
   next = nextPlatform(current, random);
   settleFrom = foot;
   settleStarted = now;
+  impactStarted = now;
   phase = "settling";
+}
+
+/**
+ * A damped bounce. 1 at the moment of impact, ringing out inside about 0.6s.
+ *
+ * This is the whole difference between landing on a crate and landing on a
+ * gum drop: a single ease back to rest reads as rigid however soft the colours
+ * are, because nothing overshoots. The cosine crosses zero and goes negative,
+ * so the block flattens, springs past its own height, and settles.
+ */
+function ring(sinceMs: number): number {
+  if (sinceMs < 0 || reduceMotion.matches) return 0;
+  const t = sinceMs / 1000;
+  if (t > 0.62) return 0;
+  return Math.exp(-t * 9.5) * Math.cos(t * 33);
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +246,7 @@ function land(now: number, landing: Landing): void {
 
 function step(now: number): void {
   if (phase === "charging") {
-    squash = Math.min((now - chargeStart) / MAX_CHARGE_MS, 1);
+    charge = Math.min((now - chargeStart) / MAX_CHARGE_MS, 1);
   }
 
   if (phase === "flying" && flight) {
@@ -229,6 +259,9 @@ function step(now: number): void {
         Math.sin(t * Math.PI) * flight.arc,
     };
     spin = reduceMotion.matches ? 0 : t * Math.PI * 2;
+    // Stretched leaving the block and again on the way down, neutral at the
+    // apex — the other half of squash-and-stretch.
+    figureSquash = reduceMotion.matches ? 0 : -0.32 * Math.abs(Math.cos(t * Math.PI));
     if (t >= 1) {
       spin = 0;
       land(now, flight.landing);
@@ -261,15 +294,30 @@ function step(now: number): void {
     if (hopStarted === 0) hopStarted = now + 1600;
     const t = (now - hopStarted) / 900;
     if (t >= 0 && t <= 1) {
-      squash = t < 0.55 ? (t / 0.55) * 0.75 : 0;
+      charge = t < 0.55 ? (t / 0.55) * 0.8 : 0;
       const spring = t < 0.55 ? 0 : Math.sin(((t - 0.55) / 0.45) * Math.PI);
       const home = iso(current.x, current.z);
-      foot = { x: home.x, y: home.y - spring * 16 };
+      foot = { x: home.x, y: home.y - spring * 18 };
+      if (t >= 0.55 && impactStarted < hopStarted) impactStarted = hopStarted + 900;
     } else if (t > 1) {
       hopStarted = now + 1400;
-      squash = 0;
+      charge = 0;
       foot = iso(current.x, current.z);
     }
+  }
+
+  // Charge deforms; impact rings. The charge squash is feedback — it is how
+  // you read how far the next jump goes — so reduced motion keeps it and
+  // drops only the ringing.
+  if (phase === "charging") {
+    blockSquash = charge * 0.9;
+    figureSquash = charge;
+  } else if (phase !== "flying") {
+    const bounce = ring(now - impactStarted);
+    blockSquash = bounce * 0.6;
+    figureSquash = bounce * 0.85;
+  } else {
+    blockSquash = 0;
   }
 
   const target = cameraTarget();
@@ -296,17 +344,25 @@ function draw(now: number): void {
   // Far to near, so the near blocks overlap the far ones.
   const blocks = [previous, current, next].filter((p): p is Platform => p !== null);
   blocks.sort((a, b) => b.x + b.z - (a.x + a.z));
+  // The block you pushed off springs back too, a third as hard.
+  const kicked = ring(now - releaseStarted) * 0.35;
   for (const block of blocks) {
-    drawPlatform(ctx, block, block === current ? squash : 0);
+    const deform =
+      block === current ? blockSquash : block === previous ? kicked : 0;
+    drawPlatform(ctx, block, deform);
   }
 
-  const ground = iso(current.x, current.z);
-  const airborne = Math.max(0, (ground.y - foot.y) / 90);
+  // Standing on a block that is being squeezed means going down with it. The
+  // piece and the top face have to move by the same amount or it wades.
+  const sink = grounded() ? sinkOf(current, blockSquash) : 0;
+  const top = iso(current.x, current.z);
+  const standing = { x: foot.x, y: foot.y + sink };
+  const airborne = Math.max(0, (top.y + sink - standing.y) / 90);
   if (phase !== "falling" && phase !== "over") {
-    drawShadow(ctx, { x: foot.x, y: ground.y }, Math.max(0, 1 - airborne));
+    drawShadow(ctx, { x: standing.x, y: top.y + sink }, Math.max(0, 1 - airborne));
   }
 
-  drawFigure(ctx, { foot, squash, spin, topple });
+  drawFigure(ctx, { foot: standing, squash: figureSquash, spin, topple });
 
   if (pop) {
     const t = (now - pop.started) / 700;
@@ -329,33 +385,40 @@ function draw(now: number): void {
 }
 
 function drawHud(): void {
-  ctx.save();
-  ctx.fillStyle = "#3b3f58";
-  ctx.textBaseline = "top";
-  ctx.font = `700 ${Math.round(Math.min(64, width * 0.11))}px ui-sans-serif, system-ui, sans-serif`;
-  ctx.fillText(String(score), 26, 22);
+  // The running score is the corner one. When the run is over it becomes the
+  // only thing on screen, so the corner copy goes — two of the same number in
+  // two sizes reads as a bug.
+  if (phase !== "over") {
+    ctx.save();
+    ctx.fillStyle = "#3b3f58";
+    ctx.textBaseline = "top";
+    ctx.font = `700 ${Math.round(Math.min(64, width * 0.11))}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillText(String(score), 26, 22);
 
-  if (streak > 1) {
-    ctx.globalAlpha = 0.55;
-    ctx.font = "600 15px ui-sans-serif, system-ui, sans-serif";
-    ctx.fillText(`×${streak}`, 28, 22 + Math.min(64, width * 0.11) + 6);
+    if (streak > 1) {
+      ctx.globalAlpha = 0.55;
+      ctx.font = "600 15px ui-sans-serif, system-ui, sans-serif";
+      ctx.fillText(`×${streak}`, 28, 22 + Math.min(64, width * 0.11) + 6);
+    }
+    ctx.restore();
+    return;
   }
-  ctx.restore();
 
-  if (phase !== "over") return;
-
+  // A scrim heavy enough to be a scrim. At 0.86 the blocks showed through as
+  // ghosts behind the number and read as a rendering fault rather than a card.
   ctx.save();
-  ctx.fillStyle = "rgba(238, 241, 246, 0.86)";
+  ctx.fillStyle = "rgba(238, 241, 246, 0.95)";
   ctx.fillRect(0, 0, width, height);
   ctx.fillStyle = "#3b3f58";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = `700 ${Math.round(Math.min(150, width * 0.3))}px ui-sans-serif, system-ui, sans-serif`;
-  ctx.fillText(String(score), width / 2, height * 0.45);
+  const size = Math.round(Math.min(190, width * 0.34));
+  ctx.font = `700 ${size}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.fillText(String(score), width / 2, height * 0.46);
   if (best > score) {
-    ctx.globalAlpha = 0.45;
-    ctx.font = "600 20px ui-sans-serif, system-ui, sans-serif";
-    ctx.fillText(String(best), width / 2, height * 0.45 + Math.min(150, width * 0.3) * 0.7);
+    ctx.globalAlpha = 0.38;
+    ctx.font = "600 22px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(String(best), width / 2, height * 0.46 + size * 0.72);
   }
   ctx.restore();
 }
@@ -372,13 +435,23 @@ function frame(now: number): void {
 
 canvas.addEventListener("pointerdown", (event) => {
   event.preventDefault();
-  canvas.setPointerCapture(event.pointerId);
+  // Capture so a finger that slides off the canvas still ends its own hold.
+  // It throws for a pointer id the browser does not consider active, and a
+  // throw here would swallow the charge — the jump must not depend on it.
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch {
+    /* not capturable; the window-level listeners below still end the hold */
+  }
   beginCharge(performance.now());
 });
 
+// On the window, not the canvas: a hold that ends with the pointer somewhere
+// else — dragged off the edge, or over the wordmark — is still a released hold,
+// and a charge that never resolves leaves the piece stuck mid-crouch.
 const up = () => release(performance.now());
-canvas.addEventListener("pointerup", up);
-canvas.addEventListener("pointercancel", up);
+window.addEventListener("pointerup", up);
+window.addEventListener("pointercancel", up);
 
 window.addEventListener("keydown", (event) => {
   if (event.code !== "Space" || event.repeat) return;
@@ -411,7 +484,7 @@ Object.defineProperty(window, "__jump", {
         scale,
         viewport: [width, height],
         gap: gapBetween(current, next),
-        squash,
+        charge,
       };
     },
     /** Drive a jump without a pointer, for measuring rather than playing. */
