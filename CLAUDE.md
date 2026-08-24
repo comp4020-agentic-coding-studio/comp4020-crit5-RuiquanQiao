@@ -64,7 +64,7 @@ These are the ones that have already caught something. They come forward.
   template's `prepare` script fails silently on Windows, so the hook that blocks
   committing a key is not installed until you do this by hand.
 
-## This prototype: 跳一跳
+## This prototype: HOP (跳一跳)
 
 - **`game.ts` imports nothing and `render.ts` imports only `game.ts`.** That
   layering is the reason the losing rule is testable without jsdom. Putting a
