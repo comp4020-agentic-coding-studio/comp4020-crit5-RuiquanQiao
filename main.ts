@@ -3,8 +3,6 @@
 
 import {
   MAX_CHARGE_MS,
-  MAX_GAP,
-  PLATFORM_SIZE,
   type Landing,
   type Platform,
   chargeToDistance,
@@ -22,6 +20,7 @@ import {
   drawFigure,
   drawPlatform,
   drawShadow,
+  fitScale,
   iso,
 } from "./render";
 
@@ -86,9 +85,6 @@ let hopStarted = 0;
 // Layout
 // ---------------------------------------------------------------------------
 
-const ISO_X = Math.cos(Math.PI / 6);
-const ISO_Y = Math.sin(Math.PI / 6);
-
 /**
  * One scale for the whole run, chosen so the widest pair the generator can
  * produce still fits with margin. Re-fitting per jump would keep both blocks
@@ -102,14 +98,7 @@ function fit(): void {
   canvas.height = Math.round(height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // Worst case is the widest gap the generator can place, plus a block at each
-  // end, plus room for the figure standing on the far one and the arc it flies.
-  const worstWide = MAX_GAP * ISO_X + PLATFORM_SIZE * ISO_X * 2;
-  const worstTall = MAX_GAP * ISO_Y + PLATFORM_SIZE * ISO_Y * 2 + 150;
-  scale = Math.max(
-    0.45,
-    Math.min(2.2, Math.min((width * 0.86) / worstWide, (height * 0.62) / worstTall)),
-  );
+  scale = fitScale(width, height);
   camReady = false;
 }
 

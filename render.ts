@@ -1,15 +1,43 @@
 // Everything that knows about pixels. `game.ts` holds the rules and never
 // imports this file; this file holds the picture and never decides anything.
 
-import { PLATFORM_SIZE, type Platform } from "./game";
+import { MAX_GAP, PLATFORM_SIZE, type Platform } from "./game";
 
 /** 2:1 isometric. One world unit of x goes right-and-down, z goes left-and-down. */
-const ISO_X = Math.cos(Math.PI / 6); // 0.866
-const ISO_Y = Math.sin(Math.PI / 6); // 0.5
+export const ISO_X = Math.cos(Math.PI / 6); // 0.866
+export const ISO_Y = Math.sin(Math.PI / 6); // 0.5
 
 export interface Point {
   x: number;
   y: number;
+}
+
+/** Room above the blocks for the figure standing on one and the arc it flies. */
+const HEADROOM = 150;
+
+/** The widest and tallest pair of blocks the generator can ever place. */
+export const WORST_PAIR = {
+  wide: MAX_GAP * ISO_X + PLATFORM_SIZE * ISO_X * 2,
+  tall: MAX_GAP * ISO_Y + PLATFORM_SIZE * ISO_Y * 2 + HEADROOM,
+};
+
+/**
+ * One scale for a whole run: the largest that still fits the worst pair the
+ * generator can produce, so no jump can ever put its target off screen.
+ *
+ * Pure, and it takes the viewport rather than reading it, because the two
+ * sizes that matter are the two the work is marked at and a test can pass
+ * those in. Measuring this in the preview pane is not an option — the pane
+ * renders at its own physical size and a hidden pane does not resize at all.
+ */
+export function fitScale(width: number, height: number): number {
+  return Math.max(
+    0.45,
+    Math.min(
+      2.2,
+      Math.min((width * 0.86) / WORST_PAIR.wide, (height * 0.62) / WORST_PAIR.tall),
+    ),
+  );
 }
 
 /**
