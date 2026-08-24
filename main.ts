@@ -3,6 +3,8 @@
 
 import {
   MAX_CHARGE_MS,
+  MAX_DISTANCE,
+  PLATFORM_REACH,
   type Landing,
   type Platform,
   chargeToDistance,
@@ -13,12 +15,18 @@ import {
   rng,
   scoreFor,
 } from "./game";
+import * as sound from "./audio";
 import {
   IMPACT_BLOCK,
   IMPACT_FIGURE,
   IMPACT_KICKED,
+  SETTLE_MS,
+  arcAt,
+  cameraProgress,
   easeOutBack,
   easeOutCubic,
+  fallAt,
+  flightSeconds,
   ring as ringCurve,
   smoothing,
 } from "./motion";
@@ -29,9 +37,12 @@ import {
   drawFigure,
   drawPlatform,
   drawShadow,
+  UPRIGHT,
   fitScale,
   iso,
+  isoVector,
   sinkOf,
+  tumbleUp,
 } from "./render";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
@@ -44,9 +55,26 @@ type Phase = "ready" | "charging" | "flying" | "settling" | "falling" | "over";
 interface Flight {
   readonly from: Point;
   readonly to: Point;
-  readonly arc: number;
+  /** World units covered, which sets the apex and the time in the air. */
+  readonly range: number;
   readonly ms: number;
+  /** Ground direction of travel, so the somersault turns in the right plane. */
+  readonly dx: number;
+  readonly dz: number;
   readonly landing: Landing;
+  started: number;
+}
+
+/** A missed landing: the same parabola, continued, with the piece tumbling. */
+interface Fall {
+  readonly at: Point;
+  readonly range: number;
+  /** Screen-space horizontal drift per second, already projected. */
+  readonly drift: Point;
+  readonly dx: number;
+  readonly dz: number;
+  readonly omega: number;
+  readonly theta0: number;
   started: number;
 }
 
@@ -102,12 +130,24 @@ let pop: Pop | null = null;
 
 /** Where the figure's feet are, in unscaled projected space. */
 let foot: Point = { x: 0, y: 0 };
-let spin = 0;
-let topple = 0;
+/** The piece's own axis, projected. Direction is lean, length is foreshortening. */
+let up: Point = UPRIGHT;
+let falling: Fall | null = null;
 
 let cam: Point = { x: 0, y: 0 };
 let camReady = false;
 let lastFrame = -1;
+/**
+ * The camera holds still through the jump and the settle, then glides.
+ *
+ * Chasing the target continuously meant it started moving the instant the
+ * piece touched down, on top of the settle and the bounce, and three things
+ * moving at once read as the whole scene being swapped rather than as the view
+ * following the player. `camAt` is when the glide is due to start.
+ */
+let camFrom: Point = { x: 0, y: 0 };
+let camTo: Point = { x: 0, y: 0 };
+let landedAt = -1;
 
 /** Set once the player has taken their first jump; kills the attract hop. */
 let hasPlayed = false;
@@ -155,6 +195,8 @@ function grounded(): boolean {
 // ---------------------------------------------------------------------------
 
 function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
+  // A run can end mid-hold — the charge tone must not outlive it.
+  sound.cancelCharge();
   random = rng(seed);
   current = firstPlatform(random);
   next = nextPlatform(current, random);
@@ -175,9 +217,10 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
   releaseStarted = -1;
   squashAtImpact = 0;
   lastFrame = -1;
-  spin = 0;
-  topple = 0;
+  up = UPRIGHT;
+  falling = null;
   flight = null;
+  landedAt = -1;
   pop = null;
   settleFrom = null;
   foot = iso(current.x, current.z);
@@ -186,6 +229,7 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
 }
 
 function beginCharge(now: number): void {
+  sound.unlock();
   if (phase === "over") {
     reset();
     return;
@@ -193,6 +237,7 @@ function beginCharge(now: number): void {
   if (phase !== "ready") return;
   phase = "charging";
   chargeStart = now;
+  sound.startCharge();
 }
 
 function release(now: number): void {
@@ -204,20 +249,24 @@ function release(now: number): void {
   const landing = resolveLanding(travelled, gap);
 
   const axis = current.axis;
-  const target = iso(
-    axis === "x" ? current.x + travelled : current.x,
-    axis === "z" ? current.z + travelled : current.z,
-  );
+  const dx = axis === "x" ? 1 : 0;
+  const dz = axis === "z" ? 1 : 0;
+  const target = iso(current.x + dx * travelled, current.z + dz * travelled);
 
   flight = {
     from: iso(current.x, current.z),
     to: target,
-    arc: 46 + travelled * 0.3,
-    ms: 330 + travelled * 0.42,
+    range: travelled,
+    // Not chosen — derived. One gravity, one launch angle, so a long jump
+    // hangs longer than a short one and nobody had to tune a curve for it.
+    ms: flightSeconds(travelled) * 1000,
+    dx,
+    dz,
     landing,
     started: now,
   };
 
+  sound.launch(charge);
   phase = "flying";
   charge = 0;
   releaseStarted = now;
@@ -226,10 +275,34 @@ function release(now: number): void {
 }
 
 function land(now: number, landing: Landing): void {
+  const shot = flight!;
+
   if (landing.kind === "fall") {
+    // Not a separate animation: the same arc, still under the same gravity,
+    // with whatever the piece was doing when it ran out of block.
+    const speed = shot.range / (shot.ms / 1000);
+    const clipped =
+      Math.abs(Math.abs(gapBetween(current, next) - shot.range) - PLATFORM_REACH) < 22;
+    const damp = clipped ? 0.45 : 1;
+    const drift = isoVector(shot.dx * speed * damp, 0, shot.dz * speed * damp);
+
+    falling = {
+      at: foot,
+      range: shot.range,
+      drift,
+      dx: shot.dx,
+      dz: shot.dz,
+      // Catching the edge kicks it end over end; missing cleanly does not.
+      omega: ((Math.PI * 2) / (shot.ms / 1000)) * (clipped ? 2.4 : 1),
+      theta0: Math.PI * 2,
+      started: now,
+    };
+
     phase = "falling";
     fallStarted = now;
     best = Math.max(best, score);
+    if (clipped) sound.scuff();
+    sound.lost();
     return;
   }
 
@@ -239,15 +312,21 @@ function land(now: number, landing: Landing): void {
     settleStarted = now;
     impactStarted = now;
     squashAtImpact = figureSquash;
+    up = UPRIGHT;
     phase = "settling";
     streak = 0;
+    sound.landed();
     return;
   }
 
   const points = scoreFor(landing.perfect, streak);
   score += points;
+  sound.landed();
+  if (landing.perfect) {
+    sound.chime(streak);
+    pop = { at: foot, points, started: now };
+  }
   streak = landing.perfect ? streak + 1 : 0;
-  if (landing.perfect) pop = { at: foot, points, started: now };
 
   previous = current;
   current = next;
@@ -263,7 +342,12 @@ function land(now: number, landing: Landing): void {
   settleStarted = now;
   impactStarted = now;
   squashAtImpact = figureSquash;
+  up = UPRIGHT;
   phase = "settling";
+  // The view waits until the piece has finished arriving, then glides.
+  camFrom = { ...cam };
+  camTo = cameraTarget();
+  landedAt = now;
 }
 
 /** The impact bounce, silenced when the player has asked for less movement. */
@@ -280,23 +364,31 @@ function step(now: number): void {
     charge = Math.min((now - chargeStart) / MAX_CHARGE_MS, 1);
   }
 
+  if (phase === "charging") sound.setCharge(charge);
+
   if (phase === "flying" && flight) {
     const t = Math.min((now - flight.started) / flight.ms, 1);
     foot = {
       x: flight.from.x + (flight.to.x - flight.from.x) * t,
-      y:
-        flight.from.y +
-        (flight.to.y - flight.from.y) * t -
-        Math.sin(t * Math.PI) * flight.arc,
+      // A parabola, not a sine hump. The difference is invisible on a static
+      // shape and obvious on a spinning one, because the rotation is linear in
+      // time and a sine's vertical speed is not.
+      y: flight.from.y + (flight.to.y - flight.from.y) * t - arcAt(flight.range, t),
     };
-    spin = reduceMotion.matches ? 0 : t * Math.PI * 2;
+    // One somersault, in the vertical plane the piece is actually travelling
+    // through — which is diagonal on screen for both isometric axes.
+    up = reduceMotion.matches
+      ? UPRIGHT
+      : tumbleUp(flight.dx, flight.dz, t * Math.PI * 2);
     // Stretched leaving the block and again on the way down, neutral at the
     // apex — the other half of squash-and-stretch.
     figureSquash = reduceMotion.matches ? 0 : -0.32 * Math.abs(Math.cos(t * Math.PI));
     if (t >= 1) {
-      spin = 0;
       land(now, flight.landing);
       flight = null;
+      // `land` either starts a fall, which keeps tumbling, or puts the piece
+      // back on its feet.
+      if (!falling) up = UPRIGHT;
     }
   }
 
@@ -305,7 +397,7 @@ function step(now: number): void {
     // back to centre while the camera pans a whole gap, and a linear 160ms
     // slide finished long before the pan did, which read as two separate
     // movements rather than one.
-    const t = Math.min((now - settleStarted) / 260, 1);
+    const t = Math.min((now - settleStarted) / SETTLE_MS, 1);
     const e = easeOutCubic(t);
     const home = iso(current.x, current.z);
     const from = settleFrom ?? home;
@@ -316,11 +408,19 @@ function step(now: number): void {
     if (t >= 1) phase = "ready";
   }
 
-  if (phase === "falling") {
-    const t = (now - fallStarted) / 1000;
-    foot = { x: foot.x, y: foot.y + 1400 * t * 0.016 };
-    topple = Math.min(t * 3.2, Math.PI / 2);
-    if (t > 0.85) phase = "over";
+  if (phase === "falling" && falling) {
+    const tau = (now - falling.started) / 1000;
+    foot = {
+      x: falling.at.x + falling.drift.x * tau,
+      // `fallAt` is height above the plane and goes negative, so subtracting
+      // it moves the piece down the screen. Same gravity as the arc.
+      y: falling.at.y + falling.drift.y * tau - fallAt(falling.range, tau),
+    };
+    up = reduceMotion.matches
+      ? UPRIGHT
+      : tumbleUp(falling.dx, falling.dz, falling.theta0 + falling.omega * tau);
+    figureSquash = 0;
+    if (tau > 1.1) phase = "over";
   }
 
   // The attract hop: with nothing on screen but a figure and a block, the one
@@ -368,13 +468,27 @@ function step(now: number): void {
   lastFrame = now;
 
   const target = cameraTarget();
-  if (!camReady) {
+  if (!camReady || reduceMotion.matches) {
     cam = target;
     camReady = true;
-  } else {
-    const k = reduceMotion.matches ? 1 : smoothing(dt, 9);
-    cam = { x: cam.x + (target.x - cam.x) * k, y: cam.y + (target.y - cam.y) * k };
+    landedAt = -1;
+    return;
   }
+
+  if (landedAt >= 0) {
+    const p = cameraProgress(now - landedAt);
+    cam = {
+      x: camFrom.x + (camTo.x - camFrom.x) * p,
+      y: camFrom.y + (camTo.y - camFrom.y) * p,
+    };
+    if (p >= 1) landedAt = -1;
+    return;
+  }
+
+  // Otherwise hold, correcting only slowly for anything that moved the target
+  // without a landing — a window resize mid-run.
+  const k = smoothing(dt, 2.5);
+  cam = { x: cam.x + (target.x - cam.x) * k, y: cam.y + (target.y - cam.y) * k };
 }
 
 function draw(now: number): void {
@@ -421,7 +535,7 @@ function draw(now: number): void {
     drawShadow(ctx, { x: standing.x, y: top.y + sink }, Math.max(0, 1 - airborne));
   }
 
-  drawFigure(ctx, { foot: standing, squash: figureSquash, spin, topple });
+  drawFigure(ctx, { foot: standing, squash: figureSquash, up });
 
   if (pop) {
     const t = (now - pop.started) / 700;
@@ -482,10 +596,77 @@ function drawHud(): void {
   ctx.restore();
 }
 
+let paused = false;
+
 function frame(now: number): void {
-  step(now);
-  draw(now);
+  if (!paused) {
+    step(now);
+    draw(now);
+  }
   requestAnimationFrame(frame);
+}
+
+/**
+ * Render a whole jump as a grid of frames, on the canvas, in one go.
+ *
+ * A single screenshot of a running game shows one pose, and the preview pane
+ * throttles requestAnimationFrame hard enough that sampling the live loop
+ * measures nothing. Both of those made it possible to ship motion that was
+ * obviously wrong to anyone who played it and invisible to me. This drives the
+ * real `step` and `draw` off a virtual clock, so what a tile shows is what the
+ * game does at that millisecond — not a reconstruction of it.
+ */
+function filmstrip(holdMs: number, cols = 5, rows = 4, dtMs = 45, seed = 20260831): void {
+  paused = true;
+  const realW = width;
+  const realH = height;
+  const realScale = scale;
+
+  const cellW = realW / cols;
+  const cellH = realH / rows;
+  width = cellW;
+  height = cellH;
+  scale = fitScale(cellW, cellH);
+
+  reset(seed);
+  const t0 = 1000;
+  beginCharge(t0);
+  release(t0 + holdMs);
+  const start = t0 + holdMs;
+
+  ctx.save();
+  ctx.setTransform(
+    Math.min(window.devicePixelRatio || 1, 2.5),
+    0,
+    0,
+    Math.min(window.devicePixelRatio || 1, 2.5),
+    0,
+    0,
+  );
+  ctx.clearRect(0, 0, realW, realH);
+  for (let i = 0; i < cols * rows; i++) {
+    const now = start + i * dtMs;
+    step(now);
+    ctx.save();
+    ctx.translate((i % cols) * cellW, Math.floor(i / cols) * cellH);
+    ctx.beginPath();
+    ctx.rect(0, 0, cellW, cellH);
+    ctx.clip();
+    draw(now);
+    ctx.fillStyle = "rgba(59,63,88,0.5)";
+    ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(`${i * dtMs}ms ${phase}`, 8, cellH - 6);
+    ctx.strokeStyle = "rgba(59,63,88,0.14)";
+    ctx.strokeRect(0.5, 0.5, cellW - 1, cellH - 1);
+    ctx.restore();
+  }
+  ctx.restore();
+
+  width = realW;
+  height = realH;
+  scale = realScale;
 }
 
 // ---------------------------------------------------------------------------
@@ -508,9 +689,9 @@ canvas.addEventListener("pointerdown", (event) => {
 // On the window, not the canvas: a hold that ends with the pointer somewhere
 // else — dragged off the edge, or over the wordmark — is still a released hold,
 // and a charge that never resolves leaves the piece stuck mid-crouch.
-const up = () => release(performance.now());
-window.addEventListener("pointerup", up);
-window.addEventListener("pointercancel", up);
+const endHold = () => release(performance.now());
+window.addEventListener("pointerup", endHold);
+window.addEventListener("pointercancel", endHold);
 
 window.addEventListener("keydown", (event) => {
   if (event.code !== "Space" || event.repeat) return;
@@ -557,6 +738,16 @@ Object.defineProperty(window, "__jump", {
       const now = performance.now();
       beginCharge(now - ms);
       release(now);
+    },
+    /** Hold time that lands dead centre on the current gap. */
+    perfectHold() {
+      return (gapBetween(current, next) * MAX_CHARGE_MS) / MAX_DISTANCE;
+    },
+    filmstrip,
+    resume() {
+      paused = false;
+      lastFrame = -1;
+      reset();
     },
     reset,
   },

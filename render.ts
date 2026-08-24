@@ -232,15 +232,53 @@ export function drawShadow(
   ctx.restore();
 }
 
+/**
+ * Screen displacement of a world *direction* under the isometric camera.
+ *
+ * `iso` maps points; this maps vectors, which is what an orientation needs. It
+ * is just `iso`'s linear part: no translation, and `y` still points up in the
+ * world and down on the screen.
+ */
+export function isoVector(vx: number, vy: number, vz: number): Point {
+  return { x: (vx - vz) * ISO_X, y: -(vx + vz) * ISO_Y - vy };
+}
+
+/** A piece standing upright: its own axis projects straight up the screen. */
+export const UPRIGHT: Point = { x: 0, y: -1 };
+
+/**
+ * Where the piece's own vertical axis points after somersaulting `theta`
+ * radians while travelling along the ground direction `(dx, dz)`.
+ *
+ * This is the difference between a tumble and a spin. A rotation applied in
+ * screen space turns the piece in the picture plane, which is right only for a
+ * jump that happens to run across the screen. Every jump here runs along one
+ * of the two isometric axes, so both of them are diagonal on screen and
+ * neither is in the picture plane — the piece has to rotate about a horizontal
+ * axis perpendicular to its own travel, and then be projected.
+ *
+ * Rotating the world up-vector (0,1,0) by `theta` about the horizontal axis
+ * perpendicular to `(dx, 0, dz)` gives `(dx sin, cos, dz sin)`, and projecting
+ * that gives both the lean *and* the foreshortening for free: the returned
+ * vector shortens as the piece goes over, which is what selling the third
+ * dimension actually needs. At the top of a somersault it is nearly flat, and
+ * you are looking at the piece side-on.
+ */
+export function tumbleUp(dx: number, dz: number, theta: number): Point {
+  const s = Math.sin(theta);
+  return isoVector(dx * s, Math.cos(theta), dz * s);
+}
+
 export interface Pose {
   /** Screen position of the point the figure stands on. */
   readonly foot: Point;
-  /** 0 = upright, 1 = fully compressed. */
+  /** 0 = upright, 1 = fully compressed. Negative stretches. */
   readonly squash: number;
-  /** Radians, about the figure's own middle. */
-  readonly spin: number;
-  /** Radians of topple once the run is lost. */
-  readonly topple: number;
+  /**
+   * The piece's own up axis, already projected. Direction gives the lean,
+   * length gives the foreshortening. `UPRIGHT` for a piece standing still.
+   */
+  readonly up: Point;
 }
 
 const BODY_TOP = "#6a6f96";
@@ -295,20 +333,23 @@ function pawnOutline(ctx: CanvasRenderingContext2D): void {
  * reads as something soft being pressed, which is the feel this is after.
  */
 export function drawFigure(ctx: CanvasRenderingContext2D, pose: Pose): void {
-  const { foot, squash, spin, topple } = pose;
+  const { foot, squash, up } = pose;
   const { wide, tall } = deformOf(squash);
+
+  // Lean is where the piece's axis points; foreshortening is how much of that
+  // axis is facing the camera. Standing, `up` is (0,-1): no lean, no
+  // shortening, and this reduces to a plain translate.
+  const lean = Math.atan2(up.x, -up.y);
+  const fore = Math.hypot(up.x, up.y);
 
   ctx.save();
   ctx.translate(foot.x, foot.y);
-  if (topple !== 0) ctx.rotate(topple);
-  // Spin happens about the piece's middle, not its feet.
-  if (spin !== 0) {
-    const pivot = FIGURE_HEIGHT / 2;
-    ctx.translate(0, -pivot);
-    ctx.rotate(spin);
-    ctx.translate(0, pivot);
-  }
-  ctx.scale(wide, tall);
+  // A tumbling body rotates about its centre of mass, not about its feet.
+  const pivot = (FIGURE_HEIGHT / 2) * tall;
+  ctx.translate(0, -pivot);
+  ctx.rotate(lean);
+  ctx.translate(0, pivot);
+  ctx.scale(wide, tall * fore);
 
   // Body, lit from above so the base stays heavy.
   pawnOutline(ctx);
