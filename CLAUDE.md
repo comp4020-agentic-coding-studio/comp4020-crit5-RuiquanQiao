@@ -1,34 +1,86 @@
 # COMP4020 prototype
 
-Your starter repo for a COMP4020 prototype: a static site in HTML/CSS/TypeScript
-that builds to plain HTML/CSS/JS and deploys to GitHub Pages. The deployed site
-is what gets marked, not this repo.
+A static site in HTML/CSS/TypeScript that builds to plain HTML/CSS/JS and
+deploys to GitHub Pages. The deployed site is what gets marked, not this repo.
 
 The
 [course website](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/)
 publishes this deliverable's brief and spec, and this repo's name tells you
 which deliverable applies. Read both before you plan or build.
 
-## The link-preview card
+## How to work in here
 
-`public/card.png` (1200x630) is the image a shared link shows; `index.html`'s
-head points at it. Replace it and the `description` meta, and copy the head
-block into any new page. The card URL resolves against the page that names it,
-like any link --- `./card.png` is wrong one directory down, and nothing in CI
-checks it, so the deployed head is the only place a broken one shows up.
+- Keep the dev server running (`pnpm dev`) so you see changes as you make them.
+- Run `pnpm check` before you push.
+- Open the page in a browser and look at it. The rendered page is the truth;
+  your mental model of it isn't.
+- When a check fails, read its output before you change anything.
+- Never commit a red state.
 
 ## The checks
 
-`pnpm check` runs them, and `pnpm check:evidence` is the extra gate before you
-ship. CI runs the same plus links, secrets and the deploy.
+`pnpm check` runs typecheck, build and tests; `pnpm check:evidence` is the
+extra gate before you ship. CI runs the same plus links, secrets and the
+deploy, and **`deploy` needs `check`** — so `PROCESS.md` without its
+`TEMPLATE:` marker, a resolving citation in it, and `reflections/crit-N.md`
+under exactly that name are deployment prerequisites, not marking extras.
 
-`spec/README.md`, `PROCESS.md` and `reflections/README.md` are in this repo and
-say what they are for.
+`spec/README.md`, `PROCESS.md` and `reflections/README.md` say what they are for.
 
-## This file is yours
+## Standards this repo holds to, whatever the brief
 
-A starting point, not a rulebook: what you add to it is the harness, and the
-harness is assessed. This file and the sensors you wire into `check` carry
-across the course --- both come with you into next week's repo. The prototype
-doesn't: source, and the tests answering this week's published spec, stay
-behind. `spec/README.md` draws the line.
+These are the ones that have already caught something. They come forward.
+
+- **If the preview tool can lie about it, compute it.** The pane renders at its
+  own physical size, and a pane that is not on screen stops compositing — so
+  `resize` never reaches the page and `requestAnimationFrame` throttles to about
+  1fps. It reported 794×808 after being told 390×844, and sampling a running
+  animation through it measured nothing. Anything about geometry or timing gets
+  written as a pure function that takes what it needs, and asserted in
+  `spec/`. `fitScale` and `motion.ts` are both there for this reason.
+- **Assert in the units that failed.** A test about a curve in the abstract let
+  a bad fix through; the same property stated in pixels, at the marking scale,
+  would have caught the original bug too. When a person reports something,
+  write the assertion in their terms.
+- **Two marking viewports, 1920×1080 and 390×844, both count**, every week.
+  `spec/viewports.test.ts` holds them.
+- **Never link a font or asset CDN.** CI's linkinator walks outbound URLs in
+  `dist/`, and an external host that 403s automated requests fails the check and
+  blocks the deploy.
+- **`prefers-reduced-motion` drops decoration, never feedback.** Here the impact
+  ring, the spin and the spawn animation go; the charge squash stays, because
+  it is how you read how far the next jump goes.
+- **`git config core.hooksPath .githooks` after every fresh clone.** The
+  template's `prepare` script fails silently on Windows, so the hook that blocks
+  committing a key is not installed until you do this by hand.
+
+## This prototype: 跳一跳
+
+- **`game.ts` imports nothing and `render.ts` imports only `game.ts`.** That
+  layering is the reason the losing rule is testable without jsdom. Putting a
+  `window` or a `performance.now()` into either of them is how this starts
+  needing synthetic pointer events to test a rule.
+- **`resolveLanding` is the only place that decides whether a run continues.**
+  It has three outcomes, not two: a hold too weak to leave the block is a
+  `stay`, not a loss. Adding a second liveness check somewhere else would pass
+  the build and break the one spec line the game is built around.
+- **Blocks squash about their base; the piece squashes about its feet.** So a
+  block's squash moves its top face, and anything standing on it has to move by
+  `sinkOf()` too or it wades. This is why the block's impact amplitude is a
+  quarter of the piece's — the ground must not lurch under the player.
+- **No deformation curve may start anywhere but rest.** A curve at full value on
+  its first frame teleports whatever it deforms, and nothing goes red.
+  `spec/motion.test.ts` holds the line at 8px of top-face movement per 60Hz
+  frame.
+- **Smoothing is a rate over elapsed time, never a per-frame constant.** As a
+  constant the camera panned 2.4x faster at 144Hz than at 60Hz.
+- **No instructions anywhere, on screen or off** — including `README.md`, which
+  the brief names explicitly. The opening screen's attract hop is the tutorial:
+  the piece compresses and springs in place until the first real jump.
+- **Read state from `window.__jump`, not from screenshots.** It exposes phase,
+  score, streak, scale, viewport, gap, charge, both squash values, the current
+  sink and the trail length, plus `hold(ms)` to drive a jump without a pointer
+  and `reset(seed)` for a reproducible run. Two traps: rAF is throttled in the
+  pane, and `setPointerCapture` throws for a synthetic pointer id.
+- **Dev server runs on port 5194** (`.tools/serve-jump.cmd`): 5173 is CertAIn and
+  5195–5199 are the earlier prototypes. Node 24 is required.

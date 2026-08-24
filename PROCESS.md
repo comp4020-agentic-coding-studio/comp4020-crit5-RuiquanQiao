@@ -1,70 +1,55 @@
 # Process overview
 
-<!-- TEMPLATE: this file is a shape to fill in, not a form. Replace everything
-     in it with your own overview, and delete this comment — `pnpm
-     check:evidence` will remind you if it's still here. -->
-
-A reading-guide to how the work came together --- a map to your process, not an
-essay about it. Markers read this file and follow its citations; they don't
-trawl the repo for evidence you didn't point at, so if a moment mattered, cite
-it.
-
-This file is the shape; the course site's
-[assessment page](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/assessment/#what-you-submit)
-is the requirement, and its
-[word counts](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/assessment/#word-counts)
-cover every deliverable.
-
 ## What I built
 
-One paragraph: the thing, and the idea behind it.
+跳一跳 — a remake of the WeChat mini-game. A chess pawn on an isometric block,
+one next block, hold to charge and release to jump. Land off it and the run
+ends. Overshoot kills as surely as falling short, so the charge is a precision
+window rather than a power meter, and centre hits pay a rising streak so there
+is a reason to aim rather than merely clear the gap. The mechanic is borrowed
+wholesale and deliberately: the original's opening screen is one of the few
+that teaches itself with no words at all, which is what this brief asks for. I
+reimplemented the look geometrically and used none of the original's assets.
 
 ## The moments that mattered
 
-Three or four for an assignment; fewer is fine for a weekly prototype. Keep the
-list short so each moment has room to do all four jobs:
+**The losing rule went in before the game did.**
+[`e0b7e7f`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-RuiquanQiao/commit/e0b7e7f)
+The obvious move is to build the game and then reach into it for something
+testable, which for a canvas game means jsdom and synthetic pointer events — a
+test of the plumbing rather than the rule. So `game.ts` came first with no DOM
+and no clock in it, and `resolveLanding` is the only place that decides whether
+a run continues. Reading the original closely enough to write the arithmetic is
+what surfaced a third outcome I did not have: a hold too weak to leave the
+block is not a loss. 23 tests, eight of them walking the boundary a pixel at a
+time, plus assertions that the generator can never place a target beyond full
+charge or so close that leaving the block clears it — either would make the
+losing rule unreachable in one direction without anything going red.
 
-1. **what happened** --- the problem, or the thing that went wrong
-2. **what you did instead of the obvious thing** --- the call you made, and why
-   it beat the obvious one
-3. **how you knew it was right** --- the check you ran, the viewport you looked
-   at, what you read before accepting the diff
-4. **the citation** --- a commit or commit range, a `CLAUDE.md` change, a check
-   that went from red to green, a prompt paired with the commit it produced
+**The preview pane reported a viewport it was not showing.**
+[`c14eac3`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-RuiquanQiao/commit/c14eac3)
+I resized it to 390×844 and read 794×808 back. The pane had been hidden, and a
+hidden pane stops compositing, so `resize` never reached the page — the number
+looked like a measurement and was a leftover. Rather than be more careful with
+the tool, I made the framing not need one: `fitScale(width, height)` is pure
+and takes the viewport, so `spec/viewports.test.ts` passes in both marking
+sizes and asserts the widest pair the generator can produce fits with better
+than 10% margin at each. That one is a sensor, not a contract test, and comes
+with me next week.
 
-Jobs 2 and 3 are the ones the repo can't tell a reader on its own, so they're
-where the marks are. The strongest moments are the ones where a correction
-landed in the **harness** --- the standards and checks your work has to satisfy
---- rather than in a retry: a rule added to `CLAUDE.md`, a check wired up, an
-attempt thrown away. Retrying until it passes is the routine case, and changing
-what the work runs against is the skilled one.
+**The first fix for the landing made it worse, and a test said so.**
+[`c13ed7b...4af7cef`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-RuiquanQiao/compare/c13ed7b...4af7cef)
+Playing it, the level change read as a cut: the impact curve was a damped
+cosine, so it began at full compression on the frame of contact, and since a
+squeezed block loses height off its top the top face and the piece standing on
+it dropped 32.1px in one frame. Damping the cosine with a rise ramp fixed the
+discontinuity and halved the impact — the ramp's time constant and the cosine's
+quarter period were within a factor of two, so the ramp ate the first peak, 1.0
+down to 0.32, and left the rebound alone. A damped sine starts at zero because
+a sine does. Peak now 1.0 at 56ms, rebound 28% of it, top face dipping 13.4px
+total and never more than 6.93px in a frame.
 
-Cite each moment as a link whose text is the commit hash or range and whose
-target is this repo's commit or compare URL, so a reader clicks straight to the
-evidence:
-
-- one commit: [`a1b2c3d`](https://github.com/YOUR-ORG/YOUR-REPO/commit/a1b2c3d)
-- a range:
-  [`a1b2c3d...e4f5a6b`](https://github.com/YOUR-ORG/YOUR-REPO/compare/a1b2c3d...e4f5a6b)
-
-To pair a prompt with the commit it produced, quote the prompt (curated, not a
-full transcript) next to the citation:
-
-> the prompt, verbatim
-
-Screenshots are welcome where one carries the verification better than a
-sentence does. Commit the file to this repo and link it with a **relative**
-path, which is what makes it render on GitHub: `![alt text](docs/before.png)`.
-Images don't count towards the word count and don't replace the citation.
-
-## Before you ship
-
-`pnpm check:evidence` verifies your citations resolve to real commits, that a
-reflection entry the marker reads is in `reflections/`, and that your
-`CLAUDE.md` is there --- before a marker ever opens the file. It checks that
-your map is traceable, not that it is good: the marker judges whether your
-small, deliberately chosen set of moments shows real judgement and reflection. A
-green check is not a substitute for that curation.
-
-Images aren't checked: unlike a citation whose SHA doesn't resolve, a broken
-image is visible the moment this file is rendered on GitHub.
+The assertion that caught the bad fix was about the curve in the abstract. I
+replaced it with one in the units that actually failed: the tallest block the
+generator makes, the larger of the two marking scales, and no more than 8px of
+top-face movement between two 60Hz frames.
