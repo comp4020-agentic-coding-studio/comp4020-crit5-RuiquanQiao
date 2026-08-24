@@ -1,16 +1,71 @@
+/* The page is one canvas. Everything else is the wordmark the invariants ask
+   for, kept to the corner so it reads as a title and not as an interface. */
+
+:root {
+  color-scheme: light;
+  --ink: #3b3f58;
+  --paper: #eef1f6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
 body {
+  height: 100%;
   margin: 0;
-  padding: 2rem;
-  font-family: system-ui, sans-serif;
-  line-height: 1.6;
-  color: #1a1a1a;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--paper);
+  font-family: ui-sans-serif, system-ui, "Segoe UI", -apple-system, sans-serif;
 }
 
-main {
-  max-width: 40rem;
-  margin: 0 auto;
+#stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* Without this a hold-and-drag on a phone scrolls the page instead of
+     charging a jump, and the game is unplayable at the marking viewport. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
 }
 
-a {
-  color: #0b5fff;
+header {
+  position: fixed;
+  top: max(18px, env(safe-area-inset-top));
+  right: max(20px, env(safe-area-inset-right));
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  pointer-events: none;
+}
+
+h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--ink);
+  opacity: 0.42;
+}
+
+nav a {
+  pointer-events: auto;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--ink);
+  opacity: 0.28;
+}
+
+nav a:hover,
+nav a:focus-visible {
+  opacity: 0.6;
 }
