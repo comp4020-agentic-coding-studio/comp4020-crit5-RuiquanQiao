@@ -7,6 +7,7 @@ import {
   PLATFORM_REACH,
   type Landing,
   type Platform,
+  blockUnder,
   chargeToDistance,
   firstPlatform,
   gapBetween,
@@ -55,6 +56,9 @@ type Phase = "ready" | "charging" | "flying" | "settling" | "falling" | "over";
 interface Flight {
   readonly from: Point;
   readonly to: Point;
+  /** Ground position the jump started from, so the shadow knows where it is. */
+  readonly fromX: number;
+  readonly fromZ: number;
   /** World units covered, which sets the apex and the time in the air. */
   readonly range: number;
   readonly ms: number;
@@ -121,6 +125,8 @@ let figureSquash = 0;
 let flight: Flight | null = null;
 let fallStarted = 0;
 let settleFrom: Point | null = null;
+let settleFromX = 0;
+let settleFromZ = 0;
 let settleStarted = 0;
 let impactStarted = -1;
 let releaseStarted = -1;
@@ -130,6 +136,11 @@ let pop: Pop | null = null;
 
 /** Where the figure's feet are, in unscaled projected space. */
 let foot: Point = { x: 0, y: 0 };
+/** And where they are on the ground plane, which is what casts the shadow. */
+let groundX = 0;
+let groundZ = 0;
+/** How far above the tops of the blocks, in world units. */
+let airHeight = 0;
 /** The piece's own axis, projected. Direction is lean, length is foreshortening. */
 let up: Point = UPRIGHT;
 let falling: Fall | null = null;
@@ -224,6 +235,9 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
   pop = null;
   settleFrom = null;
   foot = iso(current.x, current.z);
+  groundX = current.x;
+  groundZ = current.z;
+  airHeight = 0;
   camReady = false;
   hopStarted = 0;
 }
@@ -256,6 +270,8 @@ function release(now: number): void {
   flight = {
     from: iso(current.x, current.z),
     to: target,
+    fromX: current.x,
+    fromZ: current.z,
     range: travelled,
     // Not chosen — derived. One gravity, one launch angle, so a long jump
     // hangs longer than a short one and nobody had to tune a curve for it.
@@ -309,6 +325,8 @@ function land(now: number, landing: Landing): void {
   if (landing.kind === "stay") {
     // A hold too weak to leave the block. Not a loss; slide back to centre.
     settleFrom = foot;
+    settleFromX = groundX;
+    settleFromZ = groundZ;
     settleStarted = now;
     impactStarted = now;
     squashAtImpact = figureSquash;
@@ -339,6 +357,8 @@ function land(now: number, landing: Landing): void {
   }
 
   settleFrom = foot;
+  settleFromX = groundX;
+  settleFromZ = groundZ;
   settleStarted = now;
   impactStarted = now;
   squashAtImpact = figureSquash;
@@ -375,6 +395,9 @@ function step(now: number): void {
       // time and a sine's vertical speed is not.
       y: flight.from.y + (flight.to.y - flight.from.y) * t - arcAt(flight.range, t),
     };
+    groundX = flight.fromX + flight.dx * flight.range * t;
+    groundZ = flight.fromZ + flight.dz * flight.range * t;
+    airHeight = arcAt(flight.range, t);
     // One somersault, in the vertical plane the piece is actually travelling
     // through — which is diagonal on screen for both isometric axes.
     up = reduceMotion.matches
@@ -405,6 +428,11 @@ function step(now: number): void {
       x: from.x + (home.x - from.x) * e,
       y: from.y + (home.y - from.y) * e,
     };
+    // The ground point has to ease with the piece, or the shadow snaps to the
+    // block's centre while the piece is still sliding over it.
+    groundX = settleFromX + (current.x - settleFromX) * e;
+    groundZ = settleFromZ + (current.z - settleFromZ) * e;
+    airHeight = 0;
     if (t >= 1) phase = "ready";
   }
 
@@ -528,11 +556,22 @@ function draw(now: number): void {
   // Standing on a block that is being squeezed means going down with it. The
   // piece and the top face have to move by the same amount or it wades.
   const sink = grounded() ? sinkOf(current, blockSquash) : 0;
-  const top = iso(current.x, current.z);
   const standing = { x: foot.x, y: foot.y + sink };
-  const airborne = Math.max(0, (top.y + sink - standing.y) / 90);
-  if (phase !== "falling" && phase !== "over") {
-    drawShadow(ctx, { x: standing.x, y: top.y + sink }, Math.max(0, 1 - airborne));
+
+  // The shadow falls on whatever is under the piece, and on nothing at all
+  // over the gap. It is the one honest depth cue in the picture, and it turns
+  // out to be how you learn to read a jump: it slides out over the void, and
+  // whether it reappears on the far block before you land is the whole game.
+  const under = blockUnder(trail, groundX, groundZ);
+  if (under && phase !== "falling" && phase !== "over") {
+    const drop = under === current ? sink : 0;
+    // The point on the top face directly under the piece, not the block's
+    // centre — they differ by up to half a block when a landing is off-centre.
+    drawShadow(
+      ctx,
+      { x: standing.x, y: iso(groundX, groundZ).y + drop },
+      Math.max(0.12, 1 - airHeight / 120),
+    );
   }
 
   drawFigure(ctx, { foot: standing, squash: figureSquash, up });

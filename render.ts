@@ -281,9 +281,11 @@ export interface Pose {
   readonly up: Point;
 }
 
-const BODY_TOP = "#6a6f96";
+// Named for where they sit across the piece, since the light runs sideways.
+const BODY_EDGE = "#5a5f85";
+const BODY_TOP = "#767ba3";
 const BODY_MID = "#4a4f72";
-const BODY_FOOT = "#383c5a";
+const BODY_FOOT = "#2f3350";
 const HEAD_LIT = "#fffdf8";
 const HEAD_MID = "#f2ece0";
 const HEAD_SHADE = "#cfc7b7";
@@ -351,14 +353,56 @@ export function drawFigure(ctx: CanvasRenderingContext2D, pose: Pose): void {
   ctx.translate(0, pivot);
   ctx.scale(wide, tall * fore);
 
-  // Body, lit from above so the base stays heavy.
+  // Body shading runs *across* the piece, not down it. A vertical ramp is what
+  // a flat cut-out looks like; a lathed solid is read as round by the
+  // terminator running down one side of it, with the light where the blocks'
+  // own sheen is — upper left.
   pawnOutline(ctx);
-  const body = ctx.createLinearGradient(0, -60, 0, 0);
-  body.addColorStop(0, BODY_TOP);
-  body.addColorStop(0.55, BODY_MID);
+  // The gradient axis is world-horizontal expressed in the piece's own frame,
+  // so the lighting stays put while the piece tumbles. Left in local
+  // coordinates it would rotate with the body, which is a piece carrying its
+  // own little sun around with it.
+  const lx = Math.cos(lean);
+  const ly = -Math.sin(lean);
+  const body = ctx.createLinearGradient(-22 * lx, -22 * ly, 22 * lx, 22 * ly);
+  body.addColorStop(0, BODY_EDGE);
+  body.addColorStop(0.22, BODY_TOP);
+  body.addColorStop(0.62, BODY_MID);
   body.addColorStop(1, BODY_FOOT);
   ctx.fillStyle = body;
   ctx.fill();
+
+  // Ambient occlusion down at the feet, so the piece sits on the block rather
+  // than in front of it.
+  ctx.save();
+  pawnOutline(ctx);
+  ctx.clip();
+  const ao = ctx.createLinearGradient(0, -22, 0, 0);
+  ao.addColorStop(0, "rgba(24, 26, 40, 0)");
+  ao.addColorStop(1, "rgba(24, 26, 40, 0.4)");
+  ctx.fillStyle = ao;
+  ctx.fillRect(-24, -22, 48, 24);
+
+  // The rings. A body of revolution seen from 30 degrees up shows every
+  // horizontal circle as an ellipse half as tall as it is wide, and those
+  // ellipses are most of what says "turned on a lathe" rather than "drawn".
+  // Clipped to the silhouette, so each is only the annulus that faces up.
+  for (const [y, r, tint] of [
+    [-9, 19, "rgba(255, 255, 255, 0.16)"],
+    [-34, 16, "rgba(255, 255, 255, 0.2)"],
+    [-60, 7.5, "rgba(255, 255, 255, 0.14)"],
+  ] as const) {
+    ctx.beginPath();
+    ctx.ellipse(0, y, r, r * ISO_Y, 0, 0, Math.PI * 2);
+    ctx.fillStyle = tint;
+    ctx.fill();
+  }
+  // and the underside of the base, which faces away.
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 22, 22 * ISO_Y, 0, 0, Math.PI);
+  ctx.fillStyle = "rgba(20, 22, 34, 0.35)";
+  ctx.fill();
+  ctx.restore();
 
   // A soft vertical sheen down the left, clipped to the silhouette.
   // A soft sheen, not a stripe: a flat ellipse at this width reads as a scarf
@@ -366,13 +410,13 @@ export function drawFigure(ctx: CanvasRenderingContext2D, pose: Pose): void {
   ctx.save();
   pawnOutline(ctx);
   ctx.clip();
-  const gloss = ctx.createRadialGradient(-6.5, -36, 0, -6.5, -36, 22);
-  gloss.addColorStop(0, "rgba(255, 255, 255, 0.34)");
-  gloss.addColorStop(0.5, "rgba(255, 255, 255, 0.13)");
+  const gloss = ctx.createRadialGradient(-7.5, -38, 0, -7.5, -38, 15);
+  gloss.addColorStop(0, "rgba(255, 255, 255, 0.4)");
+  gloss.addColorStop(0.55, "rgba(255, 255, 255, 0.12)");
   gloss.addColorStop(1, "rgba(255, 255, 255, 0)");
   ctx.fillStyle = gloss;
   ctx.beginPath();
-  ctx.ellipse(-6.5, -36, 9, 26, 0, 0, Math.PI * 2);
+  ctx.ellipse(-7.5, -38, 6, 22, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 

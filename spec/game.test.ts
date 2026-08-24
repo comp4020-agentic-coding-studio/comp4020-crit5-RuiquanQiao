@@ -7,6 +7,7 @@ import {
   MIN_GAP,
   PERFECT_REACH,
   PLATFORM_REACH,
+  blockUnder,
   chargeToDistance,
   firstPlatform,
   gapBetween,
@@ -157,5 +158,42 @@ describe("scoring rewards aim, not survival", () => {
     const perfectRun = [0, 1, 2].reduce((sum, s) => sum + scoreFor(true, s), 0);
     const plainRun = 3 * scoreFor(false, 0);
     expect(perfectRun).toBeGreaterThan(plainRun);
+  });
+});
+
+describe("the shadow has something to fall on, or it has nothing", () => {
+  // Not decoration. The shadow leaving the near block, crossing nothing, and
+  // arriving on the far one is the only thing that tells a player how a jump
+  // is going while it is in the air — and it does it without a word.
+  const random = rng(4020);
+  const a = firstPlatform(random);
+  const b = nextPlatform(a, random);
+  const blocks = [a, b];
+
+  it("finds the block you are standing on", () => {
+    expect(blockUnder(blocks, a.x, a.z)).toBe(a);
+    expect(blockUnder(blocks, b.x, b.z)).toBe(b);
+  });
+
+  it("holds right out to the edge of a top face and no further", () => {
+    const axis = a.axis;
+    const at = (d: number) =>
+      blockUnder(blocks, axis === "x" ? a.x + d : a.x, axis === "z" ? a.z + d : a.z);
+    expect(at(PLATFORM_REACH)).toBe(a);
+    expect(at(PLATFORM_REACH + 0.01)).toBeUndefined();
+  });
+
+  it("finds nothing over the gap", () => {
+    const gap = gapBetween(a, b);
+    const axis = a.axis;
+    for (const frac of [0.35, 0.5, 0.65]) {
+      const d = gap * frac;
+      const found = blockUnder(
+        blocks,
+        axis === "x" ? a.x + d : a.x,
+        axis === "z" ? a.z + d : a.z,
+      );
+      expect(found, `something was under the piece ${frac} of the way across`).toBeUndefined();
+    }
   });
 });

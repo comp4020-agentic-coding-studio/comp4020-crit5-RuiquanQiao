@@ -125,6 +125,24 @@ export function nextPlatform(from: Platform, random: () => number): Platform {
   };
 }
 
+/**
+ * Which block, if any, is directly beneath a point on the ground plane.
+ *
+ * The shadow uses it, and the shadow is the only honest depth cue in the
+ * picture: it slides off the edge into the gap, disappears, and reappears on
+ * the far block. Whether it has reappeared before the piece lands is how a
+ * player learns to read a jump without being told anything.
+ */
+export function blockUnder(
+  blocks: readonly Platform[],
+  x: number,
+  z: number,
+): Platform | undefined {
+  return blocks.find(
+    (b) => Math.abs(x - b.x) <= PLATFORM_REACH && Math.abs(z - b.z) <= PLATFORM_REACH,
+  );
+}
+
 /** Centre-to-centre distance between two platforms, along their shared axis. */
 export function gapBetween(from: Platform, to: Platform): number {
   return Math.hypot(to.x - from.x, to.z - from.z);
