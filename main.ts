@@ -638,7 +638,7 @@ function draw(now: number): void {
 
   ctx.restore();
 
-  drawHud();
+  if (chrome) drawHud();
 }
 
 function drawHud(): void {
@@ -681,6 +681,8 @@ function drawHud(): void {
 }
 
 let paused = false;
+/** Off while rendering a link-preview card, which wants the scene and no HUD. */
+let chrome = true;
 
 function frame(now: number): void {
   if (!paused) {
@@ -708,8 +710,11 @@ function filmstrip(
   seed = 20260831,
   pxW = 1500,
   pxH = 1000,
+  label = true,
+  fromMs = 0,
 ): void {
   paused = true;
+  chrome = label;
 
   // Explicit pixels rather than the element's size. A hidden pane reports a
   // zero-width canvas, and the whole point of this is to work when the pane is
@@ -728,7 +733,7 @@ function filmstrip(
   const t0 = 1000;
   beginCharge(t0);
   release(t0 + holdMs);
-  const start = t0 + holdMs;
+  const start = t0 + holdMs + fromMs;
 
   ctx.clearRect(0, 0, pxW, pxH);
   for (let i = 0; i < cols * rows; i++) {
@@ -740,6 +745,10 @@ function filmstrip(
     ctx.rect(0, 0, cellW, cellH);
     ctx.clip();
     draw(now);
+    if (!label) {
+      ctx.restore();
+      continue;
+    }
     ctx.fillStyle = "rgba(59,63,88,0.65)";
     ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
     ctx.textAlign = "left";
@@ -749,6 +758,7 @@ function filmstrip(
     ctx.strokeRect(0.5, 0.5, cellW - 1, cellH - 1);
     ctx.restore();
   }
+  chrome = true;
 }
 
 /** Render a strip and post it to the dev server, which writes it to .frames/. */
@@ -759,9 +769,20 @@ async function shoot(name: string, holdMs: number, opts: Partial<{
   seed: number;
   w: number;
   h: number;
+  label: boolean;
+  from: number;
 }> = {}): Promise<string> {
-  const { cols = 5, rows = 4, dt = 45, seed = 20260831, w = 1500, h = 1000 } = opts;
-  filmstrip(holdMs, cols, rows, dt, seed, w, h);
+  const {
+    cols = 5,
+    rows = 4,
+    dt = 45,
+    seed = 20260831,
+    w = 1500,
+    h = 1000,
+    label = true,
+    from = 0,
+  } = opts;
+  filmstrip(holdMs, cols, rows, dt, seed, w, h, label, from);
   await fetch("/__frame", { method: "POST", body: `${name}|${canvas.toDataURL("image/png")}` });
   return `.frames/${name}.png`;
 }
