@@ -787,6 +787,54 @@ async function shoot(name: string, holdMs: number, opts: Partial<{
   return `.frames/${name}.png`;
 }
 
+// ---------------------------------------------------------------------------
+// Input, and the boot. One verb: press and release, wherever the pointer is.
+//
+// `spec/boot.test.ts` loads the built bundle and drives it through this block,
+// because this block was once deleted wholesale by a careless edit and nothing
+// noticed. The filmstrip calls `step` and `draw` directly, so it went on
+// producing perfect pictures of a game that could not be started or touched,
+// and every other test here works on pure functions that the entry point never
+// reaches. A tool that bypasses the entry path cannot verify the entry path.
+// ---------------------------------------------------------------------------
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  // Capture so a finger that slides off the canvas still ends its own hold.
+  // It throws for a pointer id the browser does not consider active, and a
+  // throw here would swallow the charge — the jump must not depend on it.
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch {
+    /* not capturable; the window listeners below still end the hold */
+  }
+  beginCharge(performance.now());
+});
+
+// On the window, not the canvas: a hold that ends with the pointer somewhere
+// else — dragged off the edge, or over the wordmark — is still a released hold,
+// and a charge that never resolves leaves the piece stuck mid-crouch.
+const endHold = () => release(performance.now());
+window.addEventListener("pointerup", endHold);
+window.addEventListener("pointercancel", endHold);
+
+window.addEventListener("keydown", (event) => {
+  if (event.code !== "Space" || event.repeat) return;
+  event.preventDefault();
+  beginCharge(performance.now());
+});
+window.addEventListener("keyup", (event) => {
+  if (event.code !== "Space") return;
+  event.preventDefault();
+  release(performance.now());
+});
+
+window.addEventListener("resize", fit);
+
+fit();
+reset();
+requestAnimationFrame(frame);
+
 Object.defineProperty(window, "__jump", {
   value: {
     get state() {
