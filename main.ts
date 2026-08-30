@@ -15,8 +15,8 @@ import {
   resolveLanding,
   rng,
   scoreFor,
-} from "./game";
-import * as sound from "./audio";
+} from "./game.ts";
+import * as sound from "./audio.ts";
 import {
   IMPACT_BLOCK,
   IMPACT_FIGURE,
@@ -26,25 +26,26 @@ import {
   cameraProgress,
   easeOutBack,
   easeOutCubic,
-  fallAt,
   flightSeconds,
   ring as ringCurve,
   smoothing,
-} from "./motion";
+} from "./motion.ts";
 import {
   BACKDROP_BOTTOM,
   BACKDROP_TOP,
   type Point,
+  comAbove,
   drawFigure,
   drawPlatform,
   drawShadow,
-  UPRIGHT,
   fitScale,
   iso,
-  isoVector,
+  orientationAt,
   sinkOf,
-  tumbleUp,
-} from "./render";
+  yawFor,
+} from "./render.ts";
+import { type Sim, type Slab, advance, launch } from "./physics.ts";
+import type { Quat } from "./vec.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
 const ctx = canvas.getContext("2d")!;
@@ -89,17 +90,21 @@ interface Flight {
   started: number;
 }
 
-/** A missed landing: the same parabola, continued, with the piece tumbling. */
+/**
+ * A missed landing, handed to the rigid body in `physics.ts`.
+ *
+ * The handover is exact rather than approximate, and that is the whole reason
+ * it reads as one movement. At the last instant of the arc the piece has a
+ * position, a velocity from the ballistics, an orientation from the somersault
+ * and an angular velocity from the somersault's rate; the body starts with all
+ * four. Before this, the fall restarted with a fresh parabola and a fresh spin,
+ * and the seam showed.
+ */
 interface Fall {
-  readonly at: Point;
-  readonly range: number;
-  /** Screen-space horizontal drift per second, already projected. */
-  readonly drift: Point;
-  readonly dx: number;
-  readonly dz: number;
-  readonly omega: number;
-  readonly theta0: number;
+  sim: Sim;
   started: number;
+  /** Whether the scuff has been played. It fires on first real contact now. */
+  scuffed: boolean;
 }
 
 interface Pop {
@@ -161,9 +166,23 @@ let groundX = 0;
 let groundZ = 0;
 /** How far above the tops of the blocks, in world units. */
 let airHeight = 0;
-/** The piece's own axis, projected. Direction is lean, length is foreshortening. */
-let up: Point = UPRIGHT;
+/**
+ * Which way the knight is facing, and how far through its somersault it is.
+ *
+ * A yaw and a pitch rather than a projected up-vector, because the piece has a
+ * front now. A pawn is a body of revolution and looks the same at every yaw, so
+ * an axis was all it could carry; a knight's heading is the thing that shows
+ * the run turning from one isometric axis to the other, and there is nowhere to
+ * put it but here.
+ */
+let yaw = 0;
+let pitch = 0;
+/** Where the yaw is turning from and to during the settle. */
+let yawFrom = 0;
+let yawTo = 0;
 let falling: Fall | null = null;
+/** Device pixels per world unit. The rasteriser needs it and cannot read it. */
+let pxScale = 1;
 
 let cam: Point = { x: 0, y: 0 };
 let camReady = false;
@@ -202,6 +221,11 @@ function fit(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   scale = fitScale(width, height);
+  // The piece is rasterised at device resolution, so it needs the whole chain:
+  // world units to CSS pixels to device pixels. Reading it back off the canvas
+  // transform would work in a browser and break every test that runs against a
+  // stub context, so it is kept here where it is set.
+  pxScale = scale * dpr;
   camReady = false;
 }
 
@@ -214,6 +238,16 @@ function cameraTarget(): Point {
     x: width / 2 - mid.x * scale,
     y: height * 0.56 - mid.y * scale,
   };
+}
+
+/** The ground direction you leave a block along, as a unit vector. */
+function headingOf(axis: "x" | "z"): [number, number] {
+  return axis === "x" ? [1, 0] : [0, 1];
+}
+
+/** The blocks, as the solver sees them: boxes whose top faces are the play plane. */
+function slabs(): Slab[] {
+  return trail.map((b) => ({ x: b.x, z: b.z, height: b.height }));
 }
 
 /** True while the piece has its feet on `current` rather than being in the air. */
@@ -248,7 +282,10 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
   releaseStarted = -1;
   squashAtImpact = 0;
   lastFrame = -1;
-  up = UPRIGHT;
+  yaw = yawFor(...headingOf(current.axis));
+  yawFrom = yaw;
+  yawTo = yaw;
+  pitch = 0;
   falling = null;
   flight = null;
   landedAt = -1;
@@ -282,9 +319,7 @@ function release(now: number): void {
   const gap = gapBetween(current, next);
   const landing = resolveLanding(travelled, gap);
 
-  const axis = current.axis;
-  const dx = axis === "x" ? 1 : 0;
-  const dz = axis === "z" ? 1 : 0;
+  const [dx, dz] = headingOf(current.axis);
   const target = iso(current.x + dx * travelled, current.z + dz * travelled);
 
   flight = {
@@ -295,7 +330,15 @@ function release(now: number): void {
     range: travelled,
     // Not chosen — derived. One gravity, one launch angle, so a long jump
     // hangs longer than a short one and nobody had to tune a curve for it.
-    ms: flightSeconds(travelled) * 1000,
+    //
+    // Floored at a millisecond because a tap released inside a single frame
+    // holds for exactly zero, which covers exactly zero distance, which under
+    // one gravity takes exactly zero seconds — and the flight parameter is
+    // elapsed over that, so the first frame of it was 0/0. The flat painter
+    // swallowed the NaN and drew nothing for one frame; the rasteriser tried to
+    // allocate a buffer of infinite width and took the whole frame loop down
+    // with it. The bug was always there. Only the second renderer reported it.
+    ms: Math.max(1, flightSeconds(travelled) * 1000),
     dx,
     dz,
     landing,
@@ -314,30 +357,36 @@ function land(now: number, landing: Landing): void {
   const shot = flight!;
 
   if (landing.kind === "fall") {
-    // Not a separate animation: the same arc, still under the same gravity,
-    // with whatever the piece was doing when it ran out of block.
-    const speed = shot.range / (shot.ms / 1000);
-    const clipped =
-      Math.abs(Math.abs(gapBetween(current, next) - shot.range) - PLATFORM_REACH) < 22;
-    const damp = clipped ? 0.45 : 1;
-    const drift = isoVector(shot.dx * speed * damp, 0, shot.dz * speed * damp);
-
+    // Everything the body starts with is the arc's own last instant, so there
+    // is no seam: horizontal speed from the range and the flight time, vertical
+    // speed from the ballistics, orientation from the end of the somersault,
+    // and spin from the rate that somersault was turning at.
+    //
+    // What used to be here instead was a guess dressed as physics. It measured
+    // how close the landing was to the block's edge, and if it was within 22
+    // units it damped the drift to 0.45 and multiplied the spin by 2.4 — a
+    // hand-tuned impression of catching an edge, applied whether or not the
+    // piece went anywhere near one, and doing nothing at all about the block
+    // itself, which the piece then fell straight through. Now the piece is
+    // simply released into a world that has the blocks in it, and clipping an
+    // edge is a contact with a torque rather than a coefficient.
     falling = {
-      at: foot,
-      range: shot.range,
-      drift,
-      dx: shot.dx,
-      dz: shot.dz,
-      // Catching the edge kicks it end over end; missing cleanly does not.
-      omega: ((Math.PI * 2) / (shot.ms / 1000)) * (clipped ? 2.4 : 1),
-      theta0: Math.PI * 2,
+      sim: launch({
+        x: groundX,
+        z: groundZ,
+        dx: shot.dx,
+        dz: shot.dz,
+        range: shot.range,
+        seconds: shot.ms / 1000,
+        spin: reduced() ? 0.45 : 1,
+      }),
       started: now,
+      scuffed: false,
     };
 
     phase = "falling";
     fallStarted = now;
     best = Math.max(best, score);
-    if (clipped) sound.scuff();
     sound.lost();
     return;
   }
@@ -350,7 +399,7 @@ function land(now: number, landing: Landing): void {
     settleStarted = now;
     impactStarted = now;
     squashAtImpact = figureSquash;
-    up = UPRIGHT;
+    turnTo(current.axis);
     phase = "settling";
     streak = 0;
     sound.landed();
@@ -382,12 +431,28 @@ function land(now: number, landing: Landing): void {
   settleStarted = now;
   impactStarted = now;
   squashAtImpact = figureSquash;
-  up = UPRIGHT;
+  turnTo(current.axis);
   phase = "settling";
   // The view waits until the piece has finished arriving, then glides.
   camFrom = { ...cam };
   camTo = cameraTarget();
   landedAt = now;
+}
+
+/**
+ * Point the knight at the jump it is about to make, over the settle.
+ *
+ * It lands facing the way it travelled, and the next block is down the other
+ * isometric axis as often as not, so it turns ninety degrees on the spot before
+ * it can go. This survives reduced motion, unlike the somersault: which way the
+ * piece is facing is *where the next jump goes*, and an accessibility setting
+ * must not take information away — only decoration. What it loses there is the
+ * spin, not the heading.
+ */
+function turnTo(axis: "x" | "z"): void {
+  pitch = 0;
+  yawFrom = yaw;
+  yawTo = yawFor(...headingOf(axis));
 }
 
 /** The impact bounce, silenced when the player has asked for less movement. */
@@ -400,6 +465,12 @@ function ring(sinceMs: number): number {
 // ---------------------------------------------------------------------------
 
 function step(now: number): void {
+  // Elapsed time first, because the rigid body needs it. Clamped, and measured
+  // in seconds against the previous frame rather than assumed: the solver runs
+  // at a fixed rate underneath and this is only how much of that rate is owed.
+  const dt = lastFrame < 0 ? 0 : Math.min((now - lastFrame) / 1000, 0.1);
+  lastFrame = now;
+
   if (phase === "charging") {
     charge = Math.min((now - chargeStart) / MAX_CHARGE_MS, 1);
   }
@@ -418,9 +489,11 @@ function step(now: number): void {
     groundX = flight.fromX + flight.dx * flight.range * t;
     groundZ = flight.fromZ + flight.dz * flight.range * t;
     airHeight = arcAt(flight.range, t);
-    // One somersault, in the vertical plane the piece is actually travelling
-    // through — which is diagonal on screen for both isometric axes.
-    up = reduced() ? UPRIGHT : tumbleUp(flight.dx, flight.dz, t * Math.PI * 2);
+    // One somersault, nose over tail, about the piece's own left/right axis.
+    // Applied in the body frame and then yawed, so it is a flip along the line
+    // of travel rather than a cartwheel across it — which is what it would be
+    // if the same angle were applied about a world axis.
+    pitch = reduced() ? 0 : t * Math.PI * 2;
     // Stretched leaving the block and again on the way down, neutral at the
     // apex — the other half of squash-and-stretch.
     figureSquash = reduced() ? 0 : -0.32 * Math.abs(Math.cos(t * Math.PI));
@@ -429,7 +502,7 @@ function step(now: number): void {
       flight = null;
       // `land` either starts a fall, which keeps tumbling, or puts the piece
       // back on its feet.
-      if (!falling) up = UPRIGHT;
+      if (!falling) pitch = 0;
     }
   }
 
@@ -451,27 +524,33 @@ function step(now: number): void {
     groundX = settleFromX + (current.x - settleFromX) * e;
     groundZ = settleFromZ + (current.z - settleFromZ) * e;
     airHeight = 0;
+    yaw = yawFrom + (yawTo - yawFrom) * e;
     if (t >= 1) phase = "ready";
   }
 
   if (phase === "falling" && falling) {
-    const tau = (now - falling.started) / 1000;
-    foot = {
-      x: falling.at.x + falling.drift.x * tau,
-      // `fallAt` is height above the plane and goes negative, so subtracting
-      // it moves the piece down the screen. Same gravity as the arc.
-      y: falling.at.y + falling.drift.y * tau - fallAt(falling.range, tau),
-    };
     // A piece that has missed is falling whatever the setting: keeping it
     // primly upright as it drops off the world is not less motion, it is a
-    // different and worse story about what just happened.
-    up = tumbleUp(
-      falling.dx,
-      falling.dz,
-      falling.theta0 + falling.omega * tau * (reduced() ? 0.4 : 1),
-    );
+    // different and worse story about what just happened. Reduced motion takes
+    // the spin down instead, at launch.
+    falling.sim = advance(falling.sim, slabs(), dt);
+    const body = falling.sim.body;
+
+    // The scuff is played on the first substep that actually resolved a
+    // contact, rather than on a guess about whether the landing was close
+    // enough to an edge to count. If you hear it, the piece hit something.
+    if (falling.sim.contacts > 0 && !falling.scuffed) {
+      falling.scuffed = true;
+      sound.scuff();
+    }
+
+    groundX = body.p[0];
+    groundZ = body.p[2];
     figureSquash = 0;
-    if (tau > 1.1) phase = "over";
+    airHeight = 0;
+    // Gone when it is well below anything drawn, or after long enough that a
+    // solver that has somehow wedged it cannot hold the run open.
+    if (body.p[1] < -340 || now - fallStarted > 1300) phase = "over";
   }
 
   // The attract hop: with nothing on screen but a figure and a block, the one
@@ -515,9 +594,6 @@ function step(now: number): void {
   // Exponential smoothing on elapsed time, not on frames. As a per-frame
   // constant this panned 2.4x faster on a 144Hz screen than on a 60Hz one,
   // which is a different game depending on the monitor it is marked on.
-  const dt = lastFrame < 0 ? 0 : Math.min((now - lastFrame) / 1000, 0.1);
-  lastFrame = now;
-
   const target = cameraTarget();
   if (!camReady) {
     cam = target;
@@ -566,7 +642,30 @@ function drawPiece(now: number): void {
     );
   }
 
-  drawFigure(ctx, { foot: standing, squash: figureSquash, up });
+  drawFigure(ctx, { at: comPoint(sink), squash: figureSquash, q: attitude() }, pxScale);
+}
+
+/**
+ * Where the piece's centre of mass is on screen.
+ *
+ * Two sources, because the piece is driven two different ways. Standing, the
+ * arc and the settle all track the *feet*, so the centre of mass is lifted off
+ * them — and lifted by less when the piece is squashed, which is why `comAbove`
+ * takes the squash. Falling, the rigid body tracks the centre of mass itself
+ * and the feet are wherever the tumble has put them.
+ */
+function comPoint(sink: number): Point {
+  if (phase === "falling" && falling) {
+    const p = falling.sim.body.p;
+    return iso(p[0], p[2], p[1]);
+  }
+  return comAbove({ x: foot.x, y: foot.y + sink }, figureSquash);
+}
+
+/** The piece's orientation: a yaw and a pitch, or the solver's own quaternion. */
+function attitude(): Quat {
+  if (phase === "falling" && falling) return falling.sim.body.q;
+  return orientationAt(yaw, pitch);
 }
 
 function draw(now: number): void {
@@ -728,6 +827,9 @@ function filmstrip(
   width = cellW;
   height = cellH;
   scale = fitScale(cellW, cellH);
+  // No device pixel ratio here: the strip is written at exactly the pixels it
+  // asks for, so that a tile can be compared with a measurement.
+  pxScale = scale;
 
   reset(seed);
   const t0 = 1000;
@@ -853,6 +955,22 @@ Object.defineProperty(window, "__jump", {
         // teleport on contact, so it is the one worth being able to sample.
         sink: grounded() ? sinkOf(current, blockSquash) : 0,
         blocks: trail.length,
+        // The piece has a heading now, so it is worth being able to read it
+        // back: `yaw` should be 0 down the x axis and -pi/2 down the z axis,
+        // and it should be turning between them through every settle.
+        yaw,
+        pitch,
+        // And the rigid body, for a fall: where it is, how fast, and how many
+        // substeps have actually resolved a contact. `contacts` staying at 0
+        // through a fall that visibly hit a block is the bug this reports.
+        body: falling
+          ? {
+              p: falling.sim.body.p,
+              v: falling.sim.body.v,
+              w: falling.sim.body.w,
+              contacts: falling.sim.contacts,
+            }
+          : null,
       };
     },
     /** Drive a jump without a pointer, for measuring rather than playing. */

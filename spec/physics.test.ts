@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_GAP, MIN_GAP } from "../game";
+import { MAX_GAP, MIN_GAP } from "../game.ts";
 import {
   CAM_GLIDE_MS,
   GRAVITY,
@@ -10,8 +10,8 @@ import {
   fallAt,
   flightSeconds,
   impactSpeed,
-} from "../motion";
-import { UPRIGHT, isoVector, tumbleUp } from "../render";
+} from "../motion.ts";
+import { UPRIGHT, isoVector, tumbleUp } from "../render.ts";
 
 // The arc used to be `sin(pi * t) * height`, which looks like a jump and is
 // not one. It only started to matter once the piece somersaulted: rotation is

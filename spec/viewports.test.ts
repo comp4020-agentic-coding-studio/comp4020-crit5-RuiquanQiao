@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FIGURE_HEIGHT, WORST_PAIR, fitScale } from "../render";
+import { FIGURE_HEIGHT, WORST_PAIR, fitScale } from "../render.ts";
 
 // A sensor, not a contract test: the two viewports below are the ones the work
 // is marked at, every week, whatever the brief. It stays in the repo when the

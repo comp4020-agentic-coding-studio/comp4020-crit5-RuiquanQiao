@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_HEIGHT } from "../game";
+import { MAX_HEIGHT } from "../game.ts";
 import {
   IMPACT_BLOCK,
   RING_MS,
@@ -7,8 +7,8 @@ import {
   easeOutCubic,
   ring,
   smoothing,
-} from "../motion";
-import { fitScale, sinkOf } from "../render";
+} from "../motion.ts";
+import { fitScale, sinkOf } from "../render.ts";
 
 // A sensor. The bug it was written for: the impact curve started at full
 // value, so on the frame of contact the block and the piece standing on it

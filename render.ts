@@ -1,16 +1,18 @@
 // Everything that knows about pixels. `game.ts` holds the rules and never
 // imports this file; this file holds the picture and never decides anything.
 
-import { MAX_GAP, PLATFORM_SIZE, type Platform } from "./game";
+import { MAX_GAP, PLATFORM_SIZE, type Platform } from "./game.ts";
+import { ISO_X, ISO_Y, type Point, iso } from "./iso.ts";
+import { comLift, renderPiece } from "./piece.ts";
+import type { Quat } from "./vec.ts";
 
-/** 2:1 isometric. One world unit of x goes right-and-down, z goes left-and-down. */
-export const ISO_X = Math.cos(Math.PI / 6); // 0.866
-export const ISO_Y = Math.sin(Math.PI / 6); // 0.5
-
-export interface Point {
-  x: number;
-  y: number;
-}
+// The camera primitives live in `iso.ts` so the 3D rasteriser can use them
+// without importing this file, which is full of canvas calls. Re-exported here
+// because everything that draws already imports this one.
+export { ISO_X, ISO_Y, iso, isoVector, isoDepth, tumbleUp, UPRIGHT } from "./iso.ts";
+export type { Point } from "./iso.ts";
+/** The piece's height comes off the mesh now, not off a drawing. */
+export { FIGURE_HEIGHT } from "./mesh.ts";
 
 /** Room above the blocks for the figure standing on one and the arc it flies. */
 const HEADROOM = 150;
@@ -38,22 +40,6 @@ export function fitScale(width: number, height: number): number {
       Math.min((width * 0.86) / WORST_PAIR.wide, (height * 0.62) / WORST_PAIR.tall),
     ),
   );
-}
-
-/**
- * World (x along one ground axis, z along the other, y up) to unscaled screen
- * space. The camera and the device pixel ratio are applied by the caller's
- * transform, so nothing in here reads `window`.
- *
- * Both ground axes recede *up* the screen, which is what puts the next block
- * up-and-right (axis x) or up-and-left (axis z) rather than down in front of
- * you. The run therefore climbs away from the viewer, as the original's does.
- */
-export function iso(x: number, z: number, y = 0): Point {
-  return {
-    x: (x - z) * ISO_X,
-    y: -(x + z) * ISO_Y - y,
-  };
 }
 
 /** The pastel run, cycled by platform id so the sequence never repeats a neighbour. */
@@ -232,219 +218,116 @@ export function drawShadow(
   ctx.restore();
 }
 
-/**
- * Screen displacement of a world *direction* under the isometric camera.
- *
- * `iso` maps points; this maps vectors, which is what an orientation needs. It
- * is just `iso`'s linear part: no translation, and `y` still points up in the
- * world and down on the screen.
- */
-export function isoVector(vx: number, vy: number, vz: number): Point {
-  return { x: (vx - vz) * ISO_X, y: -(vx + vz) * ISO_Y - vy };
-}
-
-/** A piece standing upright: its own axis projects straight up the screen. */
-export const UPRIGHT: Point = { x: 0, y: -1 };
-
-/**
- * Where the piece's own vertical axis points after somersaulting `theta`
- * radians while travelling along the ground direction `(dx, dz)`.
- *
- * This is the difference between a tumble and a spin. A rotation applied in
- * screen space turns the piece in the picture plane, which is right only for a
- * jump that happens to run across the screen. Every jump here runs along one
- * of the two isometric axes, so both of them are diagonal on screen and
- * neither is in the picture plane — the piece has to rotate about a horizontal
- * axis perpendicular to its own travel, and then be projected.
- *
- * Rotating the world up-vector (0,1,0) by `theta` about the horizontal axis
- * perpendicular to `(dx, 0, dz)` gives `(dx sin, cos, dz sin)`, and projecting
- * that gives both the lean *and* the foreshortening for free: the returned
- * vector shortens as the piece goes over, which is what selling the third
- * dimension actually needs. At the top of a somersault it is nearly flat, and
- * you are looking at the piece side-on.
- */
-export function tumbleUp(dx: number, dz: number, theta: number): Point {
-  const s = Math.sin(theta);
-  return isoVector(dx * s, Math.cos(theta), dz * s);
-}
 
 export interface Pose {
-  /** Screen position of the point the figure stands on. */
-  readonly foot: Point;
+  /**
+   * Screen position of the piece's centre of mass, unscaled.
+   *
+   * The centre of mass rather than the feet, because that is the point a body
+   * in free flight turns about and the point the rigid body actually tracks.
+   * `comLift` converts, for the phases that know where the feet are instead.
+   */
+  readonly at: Point;
   /** 0 = upright, 1 = fully compressed. Negative stretches. */
   readonly squash: number;
-  /**
-   * The piece's own up axis, already projected. Direction gives the lean,
-   * length gives the foreshortening. `UPRIGHT` for a piece standing still.
-   */
-  readonly up: Point;
-}
-
-// Named for where they sit across the piece, since the light runs sideways.
-const BODY_EDGE = "#5a5f85";
-const BODY_TOP = "#767ba3";
-const BODY_MID = "#4a4f72";
-const BODY_FOOT = "#2f3350";
-const HEAD_LIT = "#fffdf8";
-const HEAD_MID = "#f2ece0";
-const HEAD_SHADE = "#cfc7b7";
-
-/** Standing height of the piece, ball included. Roughly a block tall. */
-export const FIGURE_HEIGHT = 83;
-const HEAD_Y = -70;
-const HEAD_R = 13;
-
-/**
- * The silhouette of a chess pawn, drawn once in its own units: a flared base,
- * a concave stem, a collar, a bulb and a neck. The ball on top is a separate
- * circle so it can carry its own light.
- *
- * The right-hand profile is written out and then mirrored in reverse, which is
- * the only way the two sides stay identical when the curves get tuned.
- */
-function pawnOutline(ctx: CanvasRenderingContext2D): void {
-  ctx.beginPath();
-  // Vertical proportions matter more than the curves: a pawn is about an
-  // eighth base, a third stem, and the rest bulb and ball. An earlier version
-  // gave the base 8% and it read as a person in a coat rather than a piece.
-  ctx.moveTo(22, 0);
-  ctx.quadraticCurveTo(22, -7, 19, -9); // rolled edge of the base
-  ctx.lineTo(13.5, -13); // step up off the base
-  ctx.bezierCurveTo(11.5, -20, 8.4, -26, 8, -31); // stem, waisted hard
-  ctx.lineTo(16, -34); // collar, flared proud of the stem
-  ctx.lineTo(12, -40);
-  ctx.bezierCurveTo(17, -46, 16, -54, 8.5, -57); // bulb
-  ctx.lineTo(7.5, -60); // neck
-  ctx.lineTo(-7.5, -60);
-  ctx.lineTo(-8.5, -57);
-  ctx.bezierCurveTo(-16, -54, -17, -46, -12, -40);
-  ctx.lineTo(-16, -34);
-  ctx.lineTo(-8, -31);
-  ctx.bezierCurveTo(-8.4, -26, -11.5, -20, -13.5, -13);
-  ctx.lineTo(-19, -9);
-  ctx.quadraticCurveTo(-22, -7, -22, 0);
-  ctx.closePath();
+  /** Orientation of the piece. Built by `orientationFor` or by the solver. */
+  readonly q: Quat;
 }
 
 /**
- * The pawn, squashed and stretched about its feet.
+ * The scratch canvas the rasterised piece is handed over on.
  *
- * The deformation is uniform — head included — on purpose. Holding the ball at
- * a constant size reads as a figure crouching; letting it flatten with the rest
- * reads as something soft being pressed, which is the feel this is after.
+ * `putImageData` would be the direct route and it is the wrong one: it ignores
+ * the current transform *and* it replaces the destination rather than
+ * compositing, so the piece would arrive as an opaque rectangle of backdrop
+ * with a knight in it. Going via a canvas and `drawImage` gets alpha blending
+ * and the camera transform for free.
+ *
+ * Null in jsdom, which has no canvas at all — `spec/boot.test.ts` drives the
+ * real entry point through a stub context, and the point of that test is the
+ * wiring rather than the pixels.
  */
-export function drawFigure(ctx: CanvasRenderingContext2D, pose: Pose): void {
-  const { foot, squash, up } = pose;
-  const { wide, tall } = deformOf(squash);
+let scratch: HTMLCanvasElement | null = null;
+let scratchCtx: CanvasRenderingContext2D | null = null;
 
-  // Lean is where the piece's axis points; foreshortening is how much of that
-  // axis is facing the camera. Standing, `up` is (0,-1): no lean, no
-  // shortening, and this reduces to a plain translate.
-  const lean = Math.atan2(up.x, -up.y);
-  const fore = Math.hypot(up.x, up.y);
-
-  ctx.save();
-  ctx.translate(foot.x, foot.y);
-  // A tumbling body rotates about its centre of mass, not about its feet.
-  const pivot = (FIGURE_HEIGHT / 2) * tall;
-  ctx.translate(0, -pivot);
-  ctx.rotate(lean);
-  ctx.translate(0, pivot);
-  ctx.scale(wide, tall * fore);
-
-  // Body shading runs *across* the piece, not down it. A vertical ramp is what
-  // a flat cut-out looks like; a lathed solid is read as round by the
-  // terminator running down one side of it, with the light where the blocks'
-  // own sheen is — upper left.
-  pawnOutline(ctx);
-  // The gradient axis is world-horizontal expressed in the piece's own frame,
-  // so the lighting stays put while the piece tumbles. Left in local
-  // coordinates it would rotate with the body, which is a piece carrying its
-  // own little sun around with it.
-  const lx = Math.cos(lean);
-  const ly = -Math.sin(lean);
-  const body = ctx.createLinearGradient(-22 * lx, -22 * ly, 22 * lx, 22 * ly);
-  body.addColorStop(0, BODY_EDGE);
-  body.addColorStop(0.22, BODY_TOP);
-  body.addColorStop(0.62, BODY_MID);
-  body.addColorStop(1, BODY_FOOT);
-  ctx.fillStyle = body;
-  ctx.fill();
-
-  // Ambient occlusion down at the feet, so the piece sits on the block rather
-  // than in front of it.
-  ctx.save();
-  pawnOutline(ctx);
-  ctx.clip();
-  const ao = ctx.createLinearGradient(0, -22, 0, 0);
-  ao.addColorStop(0, "rgba(24, 26, 40, 0)");
-  ao.addColorStop(1, "rgba(24, 26, 40, 0.4)");
-  ctx.fillStyle = ao;
-  ctx.fillRect(-24, -22, 48, 24);
-
-  // The rings. A body of revolution seen from 30 degrees up shows every
-  // horizontal circle as an ellipse half as tall as it is wide, and those
-  // ellipses are most of what says "turned on a lathe" rather than "drawn".
-  // Clipped to the silhouette, so each is only the annulus that faces up.
-  for (const [y, r, tint] of [
-    [-9, 19, "rgba(255, 255, 255, 0.16)"],
-    [-34, 16, "rgba(255, 255, 255, 0.2)"],
-    [-60, 7.5, "rgba(255, 255, 255, 0.14)"],
-  ] as const) {
-    ctx.beginPath();
-    ctx.ellipse(0, y, r, r * ISO_Y, 0, 0, Math.PI * 2);
-    ctx.fillStyle = tint;
-    ctx.fill();
+function scratchFor(w: number, h: number): CanvasRenderingContext2D | null {
+  if (typeof document === "undefined") return null;
+  scratch ??= document.createElement("canvas");
+  if (!scratch) return null;
+  if (scratch.width < w || scratch.height < h) {
+    scratch.width = Math.max(scratch.width, w);
+    scratch.height = Math.max(scratch.height, h);
+    scratchCtx = null;
   }
-  // and the underside of the base, which faces away.
-  ctx.beginPath();
-  ctx.ellipse(0, 0, 22, 22 * ISO_Y, 0, 0, Math.PI);
-  ctx.fillStyle = "rgba(20, 22, 34, 0.35)";
-  ctx.fill();
-  ctx.restore();
-
-  // A soft vertical sheen down the left, clipped to the silhouette.
-  // A soft sheen, not a stripe: a flat ellipse at this width reads as a scarf
-  // slung over the piece rather than as light on a curved surface.
-  ctx.save();
-  pawnOutline(ctx);
-  ctx.clip();
-  const gloss = ctx.createRadialGradient(-7.5, -38, 0, -7.5, -38, 15);
-  gloss.addColorStop(0, "rgba(255, 255, 255, 0.4)");
-  gloss.addColorStop(0.55, "rgba(255, 255, 255, 0.12)");
-  gloss.addColorStop(1, "rgba(255, 255, 255, 0)");
-  ctx.fillStyle = gloss;
-  ctx.beginPath();
-  ctx.ellipse(-7.5, -38, 6, 22, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  // Ball: a lit sphere rather than a flat disc, which is most of the candy.
-  const ball = ctx.createRadialGradient(
-    -HEAD_R * 0.35,
-    HEAD_Y - HEAD_R * 0.4,
-    HEAD_R * 0.15,
-    0,
-    HEAD_Y,
-    HEAD_R * 1.25,
-  );
-  ball.addColorStop(0, HEAD_LIT);
-  ball.addColorStop(0.55, HEAD_MID);
-  ball.addColorStop(1, HEAD_SHADE);
-  ctx.beginPath();
-  ctx.arc(0, HEAD_Y, HEAD_R, 0, Math.PI * 2);
-  ctx.fillStyle = ball;
-  ctx.fill();
-
-  // The specular dot. Small, and the thing that sells it as a sweet.
-  ctx.save();
-  ctx.globalAlpha = 0.9;
-  ctx.fillStyle = "#ffffff";
-  ctx.beginPath();
-  ctx.ellipse(-HEAD_R * 0.34, HEAD_Y - HEAD_R * 0.42, 3.0, 2.2, -0.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  ctx.restore();
+  scratchCtx ??= scratch.getContext("2d");
+  return scratchCtx;
 }
+
+/**
+ * The piece: an actual mesh, projected, lit and depth-buffered by `piece.ts`,
+ * then composited at exactly one device pixel per rendered pixel.
+ *
+ * `pxScale` is passed in rather than read back off `ctx.getTransform()`. The
+ * caller knows it — it is the run's fitted scale times the device pixel ratio —
+ * and reading it back would make this the one drawing function that cannot run
+ * against a stub context, which is the context every boot test uses.
+ */
+export function drawFigure(
+  ctx: CanvasRenderingContext2D,
+  pose: Pose,
+  pxScale: number,
+): void {
+  const shot = renderPiece({ q: pose.q, squash: pose.squash }, pxScale);
+  const { w, h, rgba } = shot.image;
+  if (w <= 0 || h <= 0) return;
+
+  const off = scratchFor(w, h);
+  if (!off) return;
+
+  // Wipe a margin beyond the image before writing it.
+  //
+  // The scratch canvas only ever grows, so after one big frame it holds a
+  // bigger picture than the next small one overwrites. `drawImage` is given an
+  // exact source rectangle, but it filters, and filtering at the edge of that
+  // rectangle samples half a pixel outside it — straight into the leftovers.
+  // The symptom was a faint bright line down the right of the piece and another
+  // under it, on every frame, which reads as a rendering fault rather than as a
+  // chess piece. Only right and bottom: past the left and top edges there is no
+  // canvas to sample, and transparent black is what should be there anyway.
+  off.clearRect(
+    0,
+    0,
+    Math.min(off.canvas.width, w + 2),
+    Math.min(off.canvas.height, h + 2),
+  );
+  // Via `createImageData` rather than the `ImageData` constructor: the array
+  // the rasteriser hands back is a view on a reused buffer, and copying into
+  // a fresh one is both what the constructor overload wants and one fewer
+  // allocation per frame than cloning it first.
+  const bitmap = off.createImageData(w, h);
+  bitmap.data.set(rgba);
+  off.putImageData(bitmap, 0, 0);
+
+  // Drawn back at world size, so the transform already in force puts it exactly
+  // where the projection said. Divided by the scale the rasteriser *used*, not
+  // the one it was asked for: past `RENDER_CAP` it renders smaller on purpose
+  // and this is what scales it back up.
+  ctx.drawImage(
+    off.canvas,
+    0,
+    0,
+    w,
+    h,
+    pose.at.x + shot.ox / shot.scale,
+    pose.at.y + shot.oy / shot.scale,
+    w / shot.scale,
+    h / shot.scale,
+  );
+}
+
+/** Screen position of the centre of mass of a piece whose feet are at `foot`. */
+export function comAbove(foot: Point, squash: number): Point {
+  return { x: foot.x, y: foot.y - comLift(squash) };
+}
+
+export { comLift, orientationAt, orientationFor, tumbleAxis, yawFor } from "./piece.ts";

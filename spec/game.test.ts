@@ -15,7 +15,7 @@ import {
   resolveLanding,
   rng,
   scoreFor,
-} from "../game";
+} from "../game.ts";
 
 // The spec line this file answers: "it can be lost: a wrong move is possible,
 // and play ends somewhere". One rule decides that, `resolveLanding`, and it is
