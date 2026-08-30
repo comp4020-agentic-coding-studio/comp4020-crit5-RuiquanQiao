@@ -25,6 +25,8 @@ import {
 
 describe("the losing rule: where you land decides whether the run continues", () => {
   const GAP = 200;
+  /** From the centre of the block, which is where a run starts. */
+  const centred = (travelled: number) => resolveLanding(0, travelled, GAP);
 
   // travelled → what should happen, with the reasoning in the name.
   const cases: [string, number, string][] = [
@@ -40,38 +42,99 @@ describe("the losing rule: where you land decides whether the run continues", ()
 
   for (const [why, travelled, kind] of cases) {
     it(why, () => {
-      expect(resolveLanding(travelled, GAP).kind).toBe(kind);
+      expect(centred(travelled).kind).toBe(kind);
     });
   }
 
   it("names which side you missed on, because the two feel different", () => {
-    expect(resolveLanding(GAP - PLATFORM_REACH - 1, GAP)).toEqual({
-      kind: "fall",
-      reason: "short",
-    });
-    expect(resolveLanding(GAP + PLATFORM_REACH + 1, GAP)).toEqual({
-      kind: "fall",
-      reason: "long",
-    });
+    expect(centred(GAP - PLATFORM_REACH - 1)).toEqual({ kind: "fall", reason: "short" });
+    expect(centred(GAP + PLATFORM_REACH + 1)).toEqual({ kind: "fall", reason: "long" });
   });
 
   it("overshooting is fatal, so holding longer is not always better", () => {
     // The whole reason the game is a precision window and not a power meter.
-    expect(resolveLanding(MAX_DISTANCE, MIN_GAP).kind).toBe("fall");
+    expect(resolveLanding(0, MAX_DISTANCE, MIN_GAP).kind).toBe("fall");
   });
 
   it("scores a landing as perfect only within the centre reach", () => {
-    const inside = resolveLanding(GAP + PERFECT_REACH, GAP);
-    const outside = resolveLanding(GAP + PERFECT_REACH + 1, GAP);
-    expect(inside).toMatchObject({ kind: "land", perfect: true });
-    expect(outside).toMatchObject({ kind: "land", perfect: false });
+    expect(centred(GAP + PERFECT_REACH)).toMatchObject({ kind: "land", perfect: true });
+    expect(centred(GAP + PERFECT_REACH + 1)).toMatchObject({
+      kind: "land",
+      perfect: false,
+    });
   });
 
   it("is decided by the offset alone, wherever the gap is", () => {
     for (const gap of [MIN_GAP, 150, 220, MAX_GAP]) {
-      expect(resolveLanding(gap, gap)).toMatchObject({ kind: "land", perfect: true });
-      expect(resolveLanding(gap + PLATFORM_REACH + 0.5, gap).kind).toBe("fall");
+      expect(resolveLanding(0, gap, gap)).toMatchObject({ kind: "land", perfect: true });
+      expect(resolveLanding(0, gap + PLATFORM_REACH + 0.5, gap).kind).toBe("fall");
     }
+  });
+});
+
+describe("the jump starts where the piece is standing, not from the centre", () => {
+  // A landing leaves the piece where it landed. The run used to slide it back
+  // to the middle of the block over the settle, which quietly handed back
+  // whatever the player had got wrong and read as the game correcting for them.
+  // So the rule takes the standing offset, and the same charge now means
+  // different things depending on where you are.
+  const GAP = 200;
+
+  it("the same hold lands differently from different parts of the block", () => {
+    // Standing 20 units back, a hold that would have been dead centre now falls
+    // 20 short; standing 20 forward, it overshoots by 20.
+    expect(resolveLanding(-20, GAP, GAP)).toMatchObject({ kind: "land", offset: -20 });
+    expect(resolveLanding(20, GAP, GAP)).toMatchObject({ kind: "land", offset: 20 });
+    expect(resolveLanding(0, GAP, GAP)).toMatchObject({ kind: "land", offset: 0 });
+  });
+
+  it("a jump from the back of the block can fall short where a centred one lands", () => {
+    const travelled = GAP - PLATFORM_REACH + 1;
+    expect(resolveLanding(0, travelled, GAP).kind).toBe("land");
+    expect(resolveLanding(-PLATFORM_REACH, travelled, GAP)).toEqual({
+      kind: "fall",
+      reason: "short",
+    });
+  });
+
+  it("staying means still being on the block, not having barely moved", () => {
+    // Standing at the back edge, a jump of nearly a whole block width is still
+    // a stay — it ends up at the front edge. Standing at the front edge, the
+    // same jump leaves the block entirely.
+    expect(resolveLanding(-PLATFORM_REACH, PLATFORM_REACH * 2, GAP).kind).toBe("stay");
+    expect(resolveLanding(PLATFORM_REACH, 1, GAP).kind).toBe("fall");
+  });
+
+  it("leaves a landable hold from anywhere on the block, for every gap", () => {
+    // The bound that matters once the piece stops being re-centred: a run must
+    // never become unwinnable through no fault of the player. From the very
+    // back of the block the target is furthest away, and the reachable window
+    // has to still overlap what a full charge can buy.
+    for (const gap of [MIN_GAP, 150, 220, MAX_GAP]) {
+      for (const from of [-PLATFORM_REACH, -10, 0, 10, PLATFORM_REACH]) {
+        // The hold has to put the piece somewhere on the target's top face.
+        const shortest = gap - PLATFORM_REACH - from;
+        const longest = gap + PLATFORM_REACH - from;
+        expect(shortest, `gap ${gap} from ${from}: nothing reaches`).toBeLessThanOrEqual(
+          MAX_DISTANCE,
+        );
+        expect(longest, `gap ${gap} from ${from}: stepping off arrives`).toBeGreaterThan(
+          PLATFORM_REACH - from,
+        );
+        // And the middle of that window really does land.
+        const landed = resolveLanding(from, (shortest + longest) / 2, gap);
+        expect(landed.kind).toBe("land");
+      }
+    }
+  });
+
+  it("and no position lets you reach the next block without a real jump", () => {
+    // The other bound: standing at the very front edge of the block, the near
+    // edge of the closest gap the generator can produce is still further than
+    // simply stepping off.
+    const shortest = MIN_GAP - PLATFORM_REACH - PLATFORM_REACH;
+    expect(shortest).toBeGreaterThan(PLATFORM_REACH);
+    expect(resolveLanding(PLATFORM_REACH, PLATFORM_REACH, MIN_GAP).kind).toBe("fall");
   });
 });
 

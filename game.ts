@@ -56,14 +56,23 @@ export type Landing =
 /**
  * The losing rule, and the only place in the codebase that decides it.
  *
- * `travelled` and `gap` are both measured along the jump axis from the centre
- * of the platform being left, so the arithmetic is one-dimensional even though
- * the picture is not.
+ * Everything is measured along the jump axis, in world units, from the centre
+ * of the platform being left. `from` is where the piece was standing when it
+ * jumped — which is *not* the centre, because a landing leaves the piece where
+ * it landed rather than sliding it back. `travelled` is what the charge bought,
+ * and `gap` is centre to centre.
+ *
+ * Still one dimension, and deliberately. The other ground axis carries an
+ * offset too, but it cannot decide anything: the next platform sits at the same
+ * coordinate in that axis as this one, and the piece is only standing here at
+ * all because that offset was already within half a block. So it is bounded by
+ * the block's own half-width forever and never reaches the edge on its own.
  */
-export function resolveLanding(travelled: number, gap: number): Landing {
-  if (travelled <= PLATFORM_REACH) return { kind: "stay" };
+export function resolveLanding(from: number, travelled: number, gap: number): Landing {
+  const at = from + travelled;
+  if (Math.abs(at) <= PLATFORM_REACH) return { kind: "stay" };
 
-  const offset = travelled - gap;
+  const offset = at - gap;
   if (offset < -PLATFORM_REACH) return { kind: "fall", reason: "short" };
   if (offset > PLATFORM_REACH) return { kind: "fall", reason: "long" };
 

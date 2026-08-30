@@ -53,16 +53,19 @@ export function ring(sinceMs: number): number {
 }
 
 /**
- * Impact amplitudes, split because the two deform about different points.
+ * Impact amplitude for a block.
  *
- * The piece squashes about its feet, so its base does not move however hard it
- * is squeezed — it can take the full drama. A block squashes about its base,
- * which moves its top face, which moves the piece standing on it. So the block
- * gets a quarter of the amplitude: enough to see it give, not enough for the
- * ground to lurch under the player.
+ * A quarter, because a block squashes about its base, which moves its top face,
+ * which moves whatever is standing on it: enough to see it give, not enough for
+ * the ground to lurch under the player.
+ *
+ * There used to be a second amplitude here for the piece, which squashed and
+ * stretched along with everything else. The piece is a carved chess knight and
+ * carved things do not deform, so it does not any more — what reads as the
+ * charge now is the piece riding the block's top face down, which is what
+ * would actually happen.
  */
 export const IMPACT_BLOCK = 0.25;
-export const IMPACT_FIGURE = 1.0;
 /** The block you pushed off, which nothing is standing on. */
 export const IMPACT_KICKED = 0.3;
 

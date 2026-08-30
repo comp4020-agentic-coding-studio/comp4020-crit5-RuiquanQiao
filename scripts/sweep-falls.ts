@@ -19,7 +19,7 @@ export function simulateMiss(seed: number, travelled: number, seconds = 2.2) {
   const current = firstPlatform(random);
   const next = nextPlatform(current, random);
   const gap = gapBetween(current, next);
-  const landing = resolveLanding(travelled, gap);
+  const landing = resolveLanding(0, travelled, gap);
   if (landing.kind !== "fall") return null;
 
   let sim = launch({

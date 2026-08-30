@@ -13,7 +13,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { comLift, orientationFor, renderPiece } from "../piece.ts";
+import { COM_LIFT, orientationFor, renderPiece } from "../piece.ts";
 import { compose, encodePng } from "./png.ts";
 
 const BACKDROP: [number, number, number] = [0xee, 0xf1, 0xf6];
@@ -36,7 +36,7 @@ function sheet(name: string, tiles: readonly Tile[], pxScale: number): void {
 
   const items = tiles.map((tile, i) => {
     const shot = renderPiece(
-      { q: orientationFor(tile.dx, tile.dz, tile.theta), squash: tile.squash ?? 0 },
+      { q: orientationFor(tile.dx, tile.dz, tile.theta) },
       pxScale,
     );
     return {
@@ -48,7 +48,7 @@ function sheet(name: string, tiles: readonly Tile[], pxScale: number): void {
       x: Math.round(i * cell + cell / 2 + shot.ox),
       // The image is drawn about the centre of mass, so the feet land on the
       // baseline only once that lift is taken back off.
-      y: Math.round(baseline - comLift(tile.squash ?? 0) * pxScale + shot.oy),
+      y: Math.round(baseline - COM_LIFT * pxScale + shot.oy),
     };
   });
 
@@ -89,10 +89,10 @@ sheet(
 sheet(
   "squash",
   [
-    { label: "-0.32", dx: 1, dz: 0, theta: 0, squash: -0.32 },
-    { label: "0", dx: 1, dz: 0, theta: 0, squash: 0 },
-    { label: "+0.5", dx: 1, dz: 0, theta: 0, squash: 0.5 },
-    { label: "+1", dx: 1, dz: 0, theta: 0, squash: 1 },
+    { label: "-0.32", dx: 1, dz: 0, theta: 0 },
+    { label: "0", dx: 1, dz: 0, theta: 0 },
+    { label: "+0.5", dx: 1, dz: 0, theta: 0 },
+    { label: "+1", dx: 1, dz: 0, theta: 0 },
   ],
   2.2,
 );

@@ -3,7 +3,7 @@
 
 import { MAX_GAP, PLATFORM_REACH, PLATFORM_SIZE, type Platform } from "./game.ts";
 import { ISO_X, ISO_Y, type Point, iso } from "./iso.ts";
-import { comLift, renderPiece } from "./piece.ts";
+import { COM_LIFT, renderPiece } from "./piece.ts";
 import type { Quat } from "./vec.ts";
 
 // The camera primitives live in `iso.ts` so the 3D rasteriser can use them
@@ -214,20 +214,27 @@ export function paintOrder<T extends { readonly x: number; readonly z: number }>
   blocks: readonly T[],
   pieceX: number,
   pieceZ: number,
-  feet: number,
+  pieceY: number,
 ): { order: T[]; pieceAt: number } {
+  // Blocks against each other: ground depth is the whole story, because they
+  // never overlap and never leave the plane.
   const order = [...blocks].sort((a, b) => b.x + b.z - (a.x + a.z));
-  const depth = pieceX + pieceZ;
-  const above = (block: T) =>
-    feet >= -0.001 &&
-    Math.abs(pieceX - block.x) <= PLATFORM_REACH &&
-    Math.abs(pieceZ - block.z) <= PLATFORM_REACH;
 
-  // The piece goes before the first block that is both nearer the camera and
-  // not underneath it.
-  const first = order.findIndex(
-    (block) => !above(block) && block.x + block.z < depth,
-  );
+  // The piece against a block is a separating-axis question, not a depth
+  // comparison. Under this camera `+x` and `+z` both recede and `+y` rises, so
+  // the piece is in front of a box if it is clear of it on the near side of any
+  // one of the three: nearer in x, nearer in z, or above its top face. That is
+  // one rule covering every case — standing on it, flying over it, dropping
+  // past its side — where comparing `x + z` needed "unless it is standing on
+  // it" bolted on beside it, and still got the piece's own diagonal wrong.
+  const pieceIsInFrontOf = (block: T) =>
+    pieceX < block.x - PLATFORM_REACH ||
+    pieceZ < block.z - PLATFORM_REACH ||
+    pieceY > 0;
+
+  // Painted far to near, so the piece goes in just before the first block that
+  // is in front of *it* — every block behind it has already been laid down.
+  const first = order.findIndex((block) => !pieceIsInFrontOf(block));
   return { order, pieceAt: first === -1 ? order.length : first };
 }
 
@@ -268,11 +275,9 @@ export interface Pose {
    *
    * The centre of mass rather than the feet, because that is the point a body
    * in free flight turns about and the point the rigid body actually tracks.
-   * `comLift` converts, for the phases that know where the feet are instead.
+   * `comAbove` converts, for the phases that know where the feet are instead.
    */
   readonly at: Point;
-  /** 0 = upright, 1 = fully compressed. Negative stretches. */
-  readonly squash: number;
   /** Orientation of the piece. Built by `orientationFor` or by the solver. */
   readonly q: Quat;
 }
@@ -335,7 +340,7 @@ export function drawFigure(
   const off = scratchContext();
   if (!off) return;
 
-  const shot = renderPiece({ q: pose.q, squash: pose.squash }, pxScale);
+  const shot = renderPiece({ q: pose.q }, pxScale);
   const { w, h, rgba } = shot.image;
   if (w <= 0 || h <= 0) return;
 
@@ -387,8 +392,8 @@ export function drawFigure(
 }
 
 /** Screen position of the centre of mass of a piece whose feet are at `foot`. */
-export function comAbove(foot: Point, squash: number): Point {
-  return { x: foot.x, y: foot.y - comLift(squash) };
+export function comAbove(foot: Point): Point {
+  return { x: foot.x, y: foot.y - COM_LIFT };
 }
 
-export { comLift, orientationAt, orientationFor, tumbleAxis, yawFor } from "./piece.ts";
+export { COM_LIFT, orientationAt, orientationFor, tumbleAxis, yawFor } from "./piece.ts";

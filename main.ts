@@ -19,7 +19,6 @@ import {
 import * as sound from "./audio.ts";
 import {
   IMPACT_BLOCK,
-  IMPACT_FIGURE,
   IMPACT_KICKED,
   SETTLE_MS,
   arcAt,
@@ -40,12 +39,13 @@ import {
   drawShadow,
   fitScale,
   iso,
+  COM_LIFT,
   orientationAt,
   paintOrder,
   sinkOf,
   yawFor,
 } from "./render.ts";
-import { type Sim, type Slab, advance, launch, lowestContact } from "./physics.ts";
+import { type Sim, type Slab, advance, launch } from "./physics.ts";
 import type { Quat } from "./vec.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
@@ -145,20 +145,26 @@ let jumps = 0;
 let chargeStart = 0;
 /** 0..1, how full the charge is. Not a deformation — that is derived below. */
 let charge = 0;
-/** Signed squash for the block being stood on, and for the piece itself. */
+/** Signed squash for the block being stood on. The piece never deforms. */
 let blockSquash = 0;
-let figureSquash = 0;
 let flight: Flight | null = null;
 let fallStarted = 0;
-let settleFrom: Point | null = null;
-let settleFromX = 0;
-let settleFromZ = 0;
 let settleStarted = 0;
 let impactStarted = -1;
 let releaseStarted = -1;
-/** The piece's stretch at the instant of contact, decayed away rather than cut. */
-let squashAtImpact = 0;
 let pop: Pop | null = null;
+
+/**
+ * Where the piece is standing, on the ground plane.
+ *
+ * Not the centre of the block it is on. A landing leaves the piece exactly
+ * where it landed — near an edge if that is where it came down — and the next
+ * jump is measured from there. Sliding it back to the middle, which is what
+ * this used to do over the settle, quietly gave back whatever the player had
+ * got wrong, and looked like the game correcting for them.
+ */
+let standX = 0;
+let standZ = 0;
 
 /** Where the figure's feet are, in unscaled projected space. */
 let foot: Point = { x: 0, y: 0 };
@@ -278,10 +284,8 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
   jumps = 0;
   charge = 0;
   blockSquash = 0;
-  figureSquash = 0;
   impactStarted = -1;
   releaseStarted = -1;
-  squashAtImpact = 0;
   lastFrame = -1;
   yaw = yawFor(...headingOf(current.axis));
   yawFrom = yaw;
@@ -291,10 +295,11 @@ function reset(seed = Math.floor(Math.random() * 0xffffffff)): void {
   flight = null;
   landedAt = -1;
   pop = null;
-  settleFrom = null;
-  foot = iso(current.x, current.z);
-  groundX = current.x;
-  groundZ = current.z;
+  standX = current.x;
+  standZ = current.z;
+  foot = iso(standX, standZ);
+  groundX = standX;
+  groundZ = standZ;
   airHeight = 0;
   camReady = false;
   hopStarted = 0;
@@ -318,16 +323,17 @@ function release(now: number): void {
   const held = now - chargeStart;
   const travelled = chargeToDistance(held);
   const gap = gapBetween(current, next);
-  const landing = resolveLanding(travelled, gap);
-
   const [dx, dz] = headingOf(current.axis);
-  const target = iso(current.x + dx * travelled, current.z + dz * travelled);
+  // Where the piece is standing, measured along the axis it is about to jump
+  // down. Zero at the centre of the block, and up to half a block either way.
+  const from = dx * (standX - current.x) + dz * (standZ - current.z);
+  const landing = resolveLanding(from, travelled, gap);
 
   flight = {
-    from: iso(current.x, current.z),
-    to: target,
-    fromX: current.x,
-    fromZ: current.z,
+    from: iso(standX, standZ),
+    to: iso(standX + dx * travelled, standZ + dz * travelled),
+    fromX: standX,
+    fromZ: standZ,
     range: travelled,
     // Not chosen — derived. One gravity, one launch angle, so a long jump
     // hangs longer than a short one and nobody had to tune a curve for it.
@@ -393,13 +399,10 @@ function land(now: number, landing: Landing): void {
   }
 
   if (landing.kind === "stay") {
-    // A hold too weak to leave the block. Not a loss; slide back to centre.
-    settleFrom = foot;
-    settleFromX = groundX;
-    settleFromZ = groundZ;
-    settleStarted = now;
-    impactStarted = now;
-    squashAtImpact = figureSquash;
+    // A hold too weak to leave the block. Not a loss, and not a reset either:
+    // it moved the piece a little way across the top face and that is where it
+    // now stands.
+    stand(now);
     turnTo(current.axis);
     phase = "settling";
     streak = 0;
@@ -426,18 +429,28 @@ function land(now: number, landing: Landing): void {
     if (dropped) bornAt.delete(dropped.id);
   }
 
-  settleFrom = foot;
-  settleFromX = groundX;
-  settleFromZ = groundZ;
-  settleStarted = now;
-  impactStarted = now;
-  squashAtImpact = figureSquash;
+  stand(now);
   turnTo(current.axis);
   phase = "settling";
   // The view waits until the piece has finished arriving, then glides.
   camFrom = { ...cam };
   camTo = cameraTarget();
   landedAt = now;
+}
+
+/**
+ * Take up a standing position wherever the piece has just come down.
+ *
+ * The piece keeps the spot it landed on. Everything downstream reads `standX`
+ * and `standZ` — the next jump's starting offset, the shadow, the painter's
+ * order — so this is the single place the run's position is committed.
+ */
+function stand(now: number): void {
+  standX = groundX;
+  standZ = groundZ;
+  foot = iso(standX, standZ);
+  settleStarted = now;
+  impactStarted = now;
 }
 
 /**
@@ -495,9 +508,6 @@ function step(now: number): void {
     // of travel rather than a cartwheel across it — which is what it would be
     // if the same angle were applied about a world axis.
     pitch = reduced() ? 0 : t * Math.PI * 2;
-    // Stretched leaving the block and again on the way down, neutral at the
-    // apex — the other half of squash-and-stretch.
-    figureSquash = reduced() ? 0 : -0.32 * Math.abs(Math.cos(t * Math.PI));
     if (t >= 1) {
       land(now, flight.landing);
       flight = null;
@@ -508,24 +518,12 @@ function step(now: number): void {
   }
 
   if (phase === "settling") {
-    // Eased, and slower than it was: the piece slides at most 29 world units
-    // back to centre while the camera pans a whole gap, and a linear 160ms
-    // slide finished long before the pan did, which read as two separate
-    // movements rather than one.
+    // The piece does not move. It landed where it landed and it stays there;
+    // what the settle still carries is the impact bounce under it and the
+    // ninety-degree turn toward the next jump, both of which take time.
     const t = Math.min((now - settleStarted) / SETTLE_MS, 1);
-    const e = easeOutCubic(t);
-    const home = iso(current.x, current.z);
-    const from = settleFrom ?? home;
-    foot = {
-      x: from.x + (home.x - from.x) * e,
-      y: from.y + (home.y - from.y) * e,
-    };
-    // The ground point has to ease with the piece, or the shadow snaps to the
-    // block's centre while the piece is still sliding over it.
-    groundX = settleFromX + (current.x - settleFromX) * e;
-    groundZ = settleFromZ + (current.z - settleFromZ) * e;
     airHeight = 0;
-    yaw = yawFrom + (yawTo - yawFrom) * e;
+    yaw = yawFrom + (yawTo - yawFrom) * easeOutCubic(t);
     if (t >= 1) phase = "ready";
   }
 
@@ -547,7 +545,6 @@ function step(now: number): void {
 
     groundX = body.p[0];
     groundZ = body.p[2];
-    figureSquash = 0;
     airHeight = 0;
     // Gone when it is well below anything drawn, or after long enough that a
     // solver that has somehow wedged it cannot hold the run open.
@@ -563,31 +560,26 @@ function step(now: number): void {
     if (t >= 0 && t <= 1) {
       charge = t < 0.55 ? (t / 0.55) * 0.8 : 0;
       const spring = t < 0.55 || reduced() ? 0 : Math.sin(((t - 0.55) / 0.45) * Math.PI);
-      const home = iso(current.x, current.z);
+      const home = iso(standX, standZ);
       foot = { x: home.x, y: home.y - spring * 18 };
       if (t >= 0.55 && impactStarted < hopStarted) impactStarted = hopStarted + 900;
     } else if (t > 1) {
       hopStarted = now + 1400;
       charge = 0;
-      foot = iso(current.x, current.z);
+      foot = iso(standX, standZ);
     }
   }
 
-  // Charge deforms; impact rings. The charge squash is feedback — it is how
-  // you read how far the next jump goes — so reduced motion keeps it and
-  // drops only the ringing.
+  // The block deforms; the piece does not. A carved chess knight is a rigid
+  // solid, and squashing it along with the block read as rubber. What is left
+  // is truer anyway: a squeezed block loses height off its *top*, and the piece
+  // rides that face down, so charging still visibly presses the piece into the
+  // board — which is what would actually happen. That is the charge feedback,
+  // and it survives reduced motion for the same reason it always did.
   if (phase === "charging") {
     blockSquash = charge * 0.9;
-    figureSquash = charge;
   } else if (phase !== "flying") {
-    const bounce = ring(now - impactStarted);
-    blockSquash = bounce * IMPACT_BLOCK;
-    // The piece arrives stretched. Decaying that away as the bounce ramps in
-    // keeps the shape continuous across the frame of contact; cutting straight
-    // to the bounce popped it from -0.32 to 0 in one frame.
-    const carry =
-      impactStarted < 0 ? 0 : squashAtImpact * Math.exp(-((now - impactStarted) / 1000) * 26);
-    figureSquash = carry + bounce * IMPACT_FIGURE;
+    blockSquash = ring(now - impactStarted) * IMPACT_BLOCK;
   } else {
     blockSquash = 0;
   }
@@ -643,7 +635,7 @@ function drawPiece(now: number): void {
     );
   }
 
-  drawFigure(ctx, { at: comPoint(sink), squash: figureSquash, q: attitude() }, pxScale);
+  drawFigure(ctx, { at: comPoint(sink), q: attitude() }, pxScale);
 }
 
 /**
@@ -660,20 +652,26 @@ function comPoint(sink: number): Point {
     const p = falling.sim.body.p;
     return iso(p[0], p[2], p[1]);
   }
-  return comAbove({ x: foot.x, y: foot.y + sink }, figureSquash);
+  return comAbove({ x: foot.x, y: foot.y + sink });
 }
 
 /**
- * How high the piece's lowest point is above the plane the blocks' tops lie in.
+ * How high the piece's centre of mass is above the plane the blocks' tops lie
+ * in. The painter's order needs it; see `paintOrder`.
  *
- * Standing or in flight that is the arc's height, and it is never negative. In
- * a fall it is whatever the tumble has left underneath, which goes well below
- * zero — and has to, or a piece dropping past the side of a block would be
- * painted in front of it.
+ * The centre of mass, and not the lowest point of the piece, which is what this
+ * tried first. A knight leaning out over an edge has its muzzle 26 units in
+ * front of its own axis and hanging in mid-air, so its lowest point drops below
+ * the top face while it is still standing squarely on the block — and the
+ * solver leaves a fraction of a unit of penetration besides. Between them the
+ * lowest point hovered either side of zero for a tenth of a second and the
+ * painter's order flipped every frame with it. The centre of mass is monotone
+ * through the same movement: 28 units up while it rests, decaying through the
+ * twenties as it goes over, crossing zero exactly when it has left the block.
  */
-function feetHeight(): number {
-  if (phase === "falling" && falling) return lowestContact(falling.sim.body);
-  return airHeight;
+function pieceHeight(): number {
+  if (phase === "falling" && falling) return falling.sim.body.p[1];
+  return airHeight + COM_LIFT;
 }
 
 /** The piece's orientation: a yaw and a pitch, or the solver's own quaternion. */
@@ -700,7 +698,7 @@ function draw(now: number): void {
   // `paintOrder` and asserted in `spec/paint.test.ts`, because getting it wrong
   // is a quarter of a second of a block painted over the piece's feet — long
   // enough to see and short enough to doubt.
-  const { order: blocks, pieceAt } = paintOrder(trail, groundX, groundZ, feetHeight());
+  const { order: blocks, pieceAt } = paintOrder(trail, groundX, groundZ, pieceHeight());
 
   let placed = 0;
   const placePiece = () => {
@@ -961,7 +959,8 @@ Object.defineProperty(window, "__jump", {
         gap: gapBetween(current, next),
         charge,
         blockSquash,
-        figureSquash,
+        // Where the piece is standing, which is no longer the block's centre.
+        stand: [standX, standZ],
         // What the block's top face is doing. This is the number that used to
         // teleport on contact, so it is the one worth being able to sample.
         sink: grounded() ? sinkOf(current, blockSquash) : 0,
@@ -990,9 +989,14 @@ Object.defineProperty(window, "__jump", {
       beginCharge(now - ms);
       release(now);
     },
-    /** Hold time that lands dead centre on the current gap. */
+    /**
+     * Hold time that lands dead centre on the current gap — from wherever the
+     * piece is actually standing, which is the point of it.
+     */
     perfectHold() {
-      return (gapBetween(current, next) * MAX_CHARGE_MS) / MAX_DISTANCE;
+      const [dx, dz] = headingOf(current.axis);
+      const from = dx * (standX - current.x) + dz * (standZ - current.z);
+      return ((gapBetween(current, next) - from) * MAX_CHARGE_MS) / MAX_DISTANCE;
     },
     filmstrip,
     shoot,

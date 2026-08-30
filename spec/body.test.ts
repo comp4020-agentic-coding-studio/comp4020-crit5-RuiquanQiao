@@ -203,7 +203,7 @@ describe("the picture never contradicts the rule", () => {
 
       for (let held = 100; held <= 1250; held += 25) {
         const range = chargeToDistance(held);
-        if (resolveLanding(range, gap).kind !== "fall") continue;
+        if (resolveLanding(0, range, gap).kind !== "fall") continue;
         checked++;
         let sim = launch({
           x: current.x + dx * range,

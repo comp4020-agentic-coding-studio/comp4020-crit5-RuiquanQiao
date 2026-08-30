@@ -156,26 +156,17 @@ export function tumbleAxis(dx: number, dz: number): Vec3 {
 
 export interface Pose3 {
   readonly q: Quat;
-  /** 0 upright, positive compresses and spreads, negative stretches. */
-  readonly squash: number;
-}
-
-/** Squash factors, matching `render.deformOf` so piece and block agree. */
-export function deform(squash: number): { wide: number; tall: number } {
-  return { wide: 1 + squash * 0.26, tall: 1 - squash * 0.42 };
 }
 
 /**
- * World units from the feet up to the centre of mass, at a given squash.
+ * World units from the feet up to the centre of mass.
  *
  * `renderPiece` draws about the centre of mass, so anything that knows where
  * the *feet* are — standing on a block, or partway through the flight arc —
- * goes through this to find the point to draw about. A squashed piece's centre
- * of mass drops, which is the whole reason this takes an argument.
+ * adds this to find the point to draw about. It is a constant: the piece does
+ * not deform, so its centre of mass does not move within it.
  */
-export function comLift(squash: number): number {
-  return COM_HEIGHT * deform(squash).tall;
-}
+export const COM_LIFT = COM_HEIGHT;
 
 /**
  * Six numbers a vertex carries into the rasteriser: screen x, screen y, depth,
@@ -234,7 +225,6 @@ function load(into: Corner, v: Float64Array, index: number, ox: number, oy: numb
 export function renderPiece(pose: Pose3, pxScale: number): Rendered {
   const mesh = knight();
   const r: Mat3 = qToMat(pose.q);
-  const { wide, tall } = deform(pose.squash);
   const scale = Math.min(pxScale, RENDER_CAP);
   const ss = scale * SUPERSAMPLE;
 
@@ -245,24 +235,19 @@ export function renderPiece(pose: Pose3, pxScale: number): Rendered {
 
   // Pass one: pose every vertex, project it, light it, and find the bounding
   // box, all in a single walk of the mesh.
-  const nWide = 1 / wide;
-  const nTall = 1 / tall;
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
   let maxY = -Infinity;
 
-  // The squash is about the feet — a piece pressed into a block does not lift
-  // off it — but the *rotation* is about the centre of mass, because that is
-  // what a body in free flight turns about. So the origin of the returned image
-  // is the centre of mass, not the feet, and the caller says where that is.
-  const pivot = COM_HEIGHT * tall;
-
+  // Rotation is about the centre of mass, because that is what a body in free
+  // flight turns about. So the origin of the returned image is the centre of
+  // mass rather than the feet, and the caller says where that is.
   for (let i = 0; i < count; i++) {
     const p = i * 3;
-    const lx = mesh.positions[p]! * wide;
-    const ly = mesh.positions[p + 1]! * tall - pivot;
-    const lz = mesh.positions[p + 2]! * wide;
+    const lx = mesh.positions[p]!;
+    const ly = mesh.positions[p + 1]! - COM_HEIGHT;
+    const lz = mesh.positions[p + 2]!;
 
     const wx = r[0]! * lx + r[1]! * ly + r[2]! * lz;
     const wy = r[3]! * lx + r[4]! * ly + r[5]! * lz;
@@ -282,12 +267,12 @@ export function renderPiece(pose: Pose3, pxScale: number): Rendered {
     if (sy < minY) minY = sy;
     if (sy > maxY) maxY = sy;
 
-    // The normal gets the inverse-transpose of the squash, which for a diagonal
-    // scale is the reciprocal. Skip it and a compressed piece lights as though
-    // it were still upright, and the terminator slides off the form.
-    const nx0 = mesh.normals[p]! * nWide;
-    const ny0 = mesh.normals[p + 1]! * nTall;
-    const nz0 = mesh.normals[p + 2]! * nWide;
+    // No inverse-transpose needed: the only transform on the normals is a
+    // rotation, and a rotation is its own inverse-transpose. It was needed when
+    // the piece could be squashed, which it no longer can.
+    const nx0 = mesh.normals[p]!;
+    const ny0 = mesh.normals[p + 1]!;
+    const nz0 = mesh.normals[p + 2]!;
     let nx = r[0]! * nx0 + r[1]! * ny0 + r[2]! * nz0;
     let ny = r[3]! * nx0 + r[4]! * ny0 + r[5]! * nz0;
     let nz = r[6]! * nx0 + r[7]! * ny0 + r[8]! * nz0;

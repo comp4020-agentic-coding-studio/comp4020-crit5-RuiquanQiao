@@ -36,7 +36,7 @@ const current = firstPlatform(random);
 const next = nextPlatform(current, random);
 const gap = gapBetween(current, next);
 const travelled = chargeToDistance(holdMs);
-const landing = resolveLanding(travelled, gap);
+const landing = resolveLanding(0, travelled, gap);
 
 const seconds = flightSeconds(travelled);
 const [dx, dz] = current.axis === "x" ? [1, 0] : [0, 1];
@@ -134,7 +134,7 @@ poses.forEach((pose, i) => {
     fillPolygon(background, W, H, [far, right, near, left], [0xf2, 0xb8, 0xb5]);
   }
 
-  const shot = renderPiece({ q: pose.q as never, squash: 0 }, SCALE);
+  const shot = renderPiece({ q: pose.q as never }, SCALE);
   const [px, py] = at(ox, oy, pose.p[0]!, pose.p[1]!, pose.p[2]!);
   items.push({
     rgba: new Uint8ClampedArray(shot.image.rgba),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FIGURE_HEIGHT } from "../mesh.ts";
 import { UPRIGHT, isoVector, tumbleUp } from "../iso.ts";
-import { comLift, deform, orientationFor, renderPiece } from "../piece.ts";
+import { COM_LIFT, orientationFor, renderPiece } from "../piece.ts";
 import { fitScale } from "../render.ts";
 import { type Vertex, clear, downsample, surface, triangle } from "../raster.ts";
 import { QID, mulMV, qToMat } from "../vec.ts";
@@ -75,7 +75,7 @@ describe("the rendered piece", () => {
   const SCALE = 2;
 
   it("is taller on screen than it is in the world, by its own footprint", () => {
-    const shot = renderPiece({ q: orientationFor(1, 0, 0), squash: 0 }, SCALE);
+    const shot = renderPiece({ q: orientationFor(1, 0, 0) }, SCALE);
     const { height } = measure(shot.image);
     // Not equal to the shape's height, and the difference is the camera rather
     // than a bug. `iso` sends a ground direction to `-(x + z) · ISO_Y` on
@@ -98,7 +98,7 @@ describe("the rendered piece", () => {
     // The alpha-weighted centroid of the silhouette is not the centre of mass,
     // but it tracks it, so the test is that it barely moves.
     const offsets = [0, 0.25, 0.5, 0.75].map((turn) => {
-      const shot = renderPiece({ q: orientationFor(1, 0, turn * Math.PI * 2), squash: 0 }, SCALE);
+      const shot = renderPiece({ q: orientationFor(1, 0, turn * Math.PI * 2) }, SCALE);
       let mass = 0;
       let cx = 0;
       let cy = 0;
@@ -114,13 +114,13 @@ describe("the rendered piece", () => {
       return Math.hypot(cx / mass, cy / mass);
     });
     // Pivoting about the feet would put every one of these about
-    // `comLift(0) * SCALE` away — some fifty pixels at this scale.
+    // `COM_LIFT * SCALE` away — some fifty pixels at this scale.
     expect(Math.max(...offsets), `centroid wandered ${Math.max(...offsets).toFixed(1)}px`)
-      .toBeLessThan(comLift(0) * SCALE * 0.25);
+      .toBeLessThan(COM_LIFT * SCALE * 0.25);
   });
 
   it("has soft edges, which is what a supersampled silhouette buys", () => {
-    const shot = renderPiece({ q: orientationFor(1, 0, 0), squash: 0 }, SCALE);
+    const shot = renderPiece({ q: orientationFor(1, 0, 0) }, SCALE);
     const { covered, partial } = measure(shot.image);
     // Every outline on this shape is a diagonal; without the box filter every
     // one of them is a staircase, and at 90px tall that is what reads as
@@ -149,7 +149,7 @@ describe("the rendered piece", () => {
     // lathe and outweighs the head that does the leaning. Overlap of the whole
     // silhouette is what actually looks at the shape.
     const covered = (dx: number, dz: number) => {
-      const shot = renderPiece({ q: orientationFor(dx, dz, 0), squash: 0 }, SCALE);
+      const shot = renderPiece({ q: orientationFor(dx, dz, 0) }, SCALE);
       const set = new Set<string>();
       for (let y = 0; y < shot.image.h; y++) {
         for (let x = 0; x < shot.image.w; x++) {
@@ -178,17 +178,20 @@ describe("the rendered piece", () => {
       .toBeGreaterThan(0.93);
   });
 
-  it("squashes wider and shorter, and stretches the other way", () => {
-    const at = (squash: number) =>
-      measure(renderPiece({ q: QID, squash }, SCALE).image);
-    const pressed = at(1);
-    const rest = at(0);
-    const stretched = at(-0.32);
-    expect(pressed.height).toBeLessThan(rest.height);
-    expect(pressed.width).toBeGreaterThan(rest.width);
-    expect(stretched.height).toBeGreaterThan(rest.height);
-    // And the numbers are the ones the blocks deform by, not a second set.
-    expect(deform(1).tall).toBeCloseTo(0.58, 10);
+  it("does not deform, whatever the game is doing", () => {
+    // It used to. Charging squashed the piece along with the block it stood on
+    // and the flight stretched it, which is cartoon logic applied to a carved
+    // chess knight, and it read as rubber. A pose is now an orientation and
+    // nothing else — there is no way to ask for a deformed piece, and the same
+    // orientation always gives the same silhouette.
+    const a = measure(renderPiece({ q: QID }, SCALE).image);
+    const b = measure(renderPiece({ q: QID }, SCALE).image);
+    expect(a).toEqual(b);
+    // A rigid body's silhouette is the same size whichever way up it is, once
+    // you allow for the camera looking down at it from thirty degrees.
+    const turned = measure(renderPiece({ q: orientationFor(1, 0, Math.PI) }, SCALE).image);
+    expect(turned.covered).toBeGreaterThan(a.covered * 0.75);
+    expect(turned.covered).toBeLessThan(a.covered * 1.35);
   });
 
   it("renders at the scale each marking viewport actually asks for", () => {
@@ -202,7 +205,7 @@ describe("the rendered piece", () => {
       ["desktop 1920x1080 @2x", 1920, 1080, 2],
       ["phone 390x844 @3x", 390, 844, 3],
     ] as const) {
-      const shot = renderPiece({ q: orientationFor(1, 0, 0), squash: 0 }, fitScale(width, height) * dpr);
+      const shot = renderPiece({ q: orientationFor(1, 0, 0) }, fitScale(width, height) * dpr);
       const { covered, height: tall } = measure(shot.image);
       expect(covered, `${name} rendered nothing`).toBeGreaterThan(500);
       // Below about 40 device pixels the piece stops resolving and reads as a
@@ -216,7 +219,7 @@ describe("the rendered piece", () => {
     // posed the piece at NaN. The flat painter swallowed it; this tried to size
     // a buffer to an infinite bounding box and took the frame loop with it.
     // Fixed at the source, and refused here as well.
-    const shot = renderPiece({ q: [Number.NaN, 0, 0, 0], squash: 0 }, SCALE);
+    const shot = renderPiece({ q: [Number.NaN, 0, 0, 0] }, SCALE);
     expect(shot.image.w).toBe(0);
     expect(shot.image.h).toBe(0);
   });
