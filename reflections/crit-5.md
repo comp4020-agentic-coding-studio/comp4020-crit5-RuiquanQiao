@@ -23,12 +23,15 @@ browser either.
 The instrument is not a detour from the work. It is the part of the work that
 decides how fast everything after it goes.
 
-And then it failed to catch one, which is the other half of the lesson. Playing
-the finished build, I saw a block paint over the piece's feet for a quarter of a
-second after landing and then stop. The instrument renders exactly those frames
-and I had looked at dozens of them without noticing, because the fault heals
-itself and what you see is a flicker you then doubt. A tool that shows you
-everything still needs someone who knows what wrong looks like.
+And then it failed to catch four things in a row, which is the other half of the
+lesson. Playing the finished build turned up a block painting over the piece's
+feet after a landing, the same order chattering as the piece rolled off an edge,
+a piece that squashed like rubber because I had given a carved chess knight
+squash-and-stretch without thinking about it, and a settle that slid the piece
+back to the middle of the block — quietly handing back whatever the player had
+got wrong. The instrument renders every one of those frames, and I had looked at
+dozens of them. A tool that shows you everything still needs someone who knows
+what wrong looks like, and I was not that person until I had played it.
 
 ## What did this work change about who I want to be as a software developer?
 

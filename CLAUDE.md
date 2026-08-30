@@ -131,14 +131,33 @@ These are the ones that have already caught something. They come forward.
 - **Verify the winding by measuring it, per part.** A whole-mesh volume check
   passes when two parts are both inside out, because the errors cancel.
 - **The painter's order is a rule, not a comparison, and it lives in
-  `paintOrder`.** Something standing on a block's top face is *above* it and is
-  painted after it wherever on the face it stands; ground depth (`x + z`) only
-  orders the blocks the piece is not on, and the height of its lowest point is
-  what tells the two cases apart. Comparing the piece's landing point against a
-  block's centre — which is what this did — paints the block over the piece's
-  feet for any landing past the centre line, heals itself over the settle, and
-  is invisible to every check in the repo. It was found by playing. Do not
-  reintroduce a bare depth comparison here.
+  `paintOrder`.** The piece is in front of a block if it is nearer in x, or
+  nearer in z, or above its top face — the separating-axis test, one rule for
+  standing on it, flying over it and dropping past its side. Two ways of getting
+  this wrong have already shipped, both found by playing and neither visible to
+  any check in the repo:
+  - Comparing the piece's landing point against a block's *centre* paints the
+    block over the piece's feet for any landing past the centre line, then heals
+    itself over the settle. Do not reintroduce a bare depth comparison.
+  - Feeding it the piece's *lowest point* makes it chatter. A knight leaning
+    over an edge has its muzzle hanging in mid-air 26 units in front of its own
+    axis, so that number crosses zero repeatedly while the piece is still on the
+    block. It takes the **centre of mass**, which is monotone through the same
+    movement. `spec/paint.test.ts` asserts the order changes exactly once on the
+    way down, and at the top face.
+- **The piece does not deform, ever.** It is a carved chess knight. `Pose` is an
+  orientation and nothing else, and there is no argument to ask for a squash.
+  Charging still reads, because a squeezed block loses height off its top and
+  the piece rides that face down — which is what would actually happen. Adding
+  squash-and-stretch back would be reaching for cartoon logic on a rigid object.
+- **The piece stands where it landed. Do not re-centre it.** The settle used to
+  slide it back to the middle of the block over 260ms, which hands the player
+  back whatever they got wrong and reads as the game correcting for them.
+  `resolveLanding` takes the standing offset as its first argument for this
+  reason, so the same charge means different things from different parts of a
+  block. `spec/game.test.ts` asserts the consequence that has to hold: from
+  every position, for every gap the generator makes, there is still a hold that
+  lands and it is inside a full charge.
 - **Draw the piece in the depth order, not on top.** Depth on the ground plane
   is `x + z`; blocks at least as far away as the piece go first, nearer ones
   after. Drawn last, an overshooting piece sails across the front of the block
