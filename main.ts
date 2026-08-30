@@ -41,10 +41,11 @@ import {
   fitScale,
   iso,
   orientationAt,
+  paintOrder,
   sinkOf,
   yawFor,
 } from "./render.ts";
-import { type Sim, type Slab, advance, launch } from "./physics.ts";
+import { type Sim, type Slab, advance, launch, lowestContact } from "./physics.ts";
 import type { Quat } from "./vec.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
@@ -662,6 +663,19 @@ function comPoint(sink: number): Point {
   return comAbove({ x: foot.x, y: foot.y + sink }, figureSquash);
 }
 
+/**
+ * How high the piece's lowest point is above the plane the blocks' tops lie in.
+ *
+ * Standing or in flight that is the arc's height, and it is never negative. In
+ * a fall it is whatever the tumble has left underneath, which goes well below
+ * zero — and has to, or a piece dropping past the side of a block would be
+ * painted in front of it.
+ */
+function feetHeight(): number {
+  if (phase === "falling" && falling) return lowestContact(falling.sim.body);
+  return airHeight;
+}
+
 /** The piece's orientation: a yaw and a pitch, or the solver's own quaternion. */
 function attitude(): Quat {
   if (phase === "falling" && falling) return falling.sim.body.q;
@@ -679,26 +693,23 @@ function draw(now: number): void {
   ctx.translate(cam.x, cam.y);
   ctx.scale(scale, scale);
 
-  // Far to near, so the near blocks overlap the far ones.
-  const blocks = [...trail].sort((a, b) => b.x + b.z - (a.x + a.z));
   // The block you pushed off springs back too, a third as hard.
   const kicked = ring(now - releaseStarted) * IMPACT_KICKED;
 
-  // The piece belongs in that order too, not on top of it. Overshooting sends
-  // it *past* the target — further from the camera — and drawing it last had
-  // it sail across the front of a block it was behind. Depth along the ground
-  // plane is x+z; anything at least as far away as the piece is drawn first,
-  // and the block it is standing on ties, so that one goes underneath.
-  const pieceDepth = groundX + groundZ;
-  let piecePlaced = false;
+  // Far to near, with the piece in its place among them. The rule is in
+  // `paintOrder` and asserted in `spec/paint.test.ts`, because getting it wrong
+  // is a quarter of a second of a block painted over the piece's feet — long
+  // enough to see and short enough to doubt.
+  const { order: blocks, pieceAt } = paintOrder(trail, groundX, groundZ, feetHeight());
+
+  let placed = 0;
   const placePiece = () => {
-    if (piecePlaced) return;
-    piecePlaced = true;
+    if (placed++) return;
     drawPiece(now);
   };
 
-  for (const block of blocks) {
-    if (block.x + block.z < pieceDepth) placePiece();
+  for (const [index, block] of blocks.entries()) {
+    if (index === pieceAt) placePiece();
     const deform =
       block === current ? blockSquash : block === previous ? kicked : 0;
 
@@ -718,7 +729,7 @@ function draw(now: number): void {
     drawPlatform(ctx, block, deform);
     ctx.restore();
   }
-  placePiece();
+  if (pieceAt >= blocks.length) placePiece();
 
   if (pop) {
     const t = (now - pop.started) / 700;

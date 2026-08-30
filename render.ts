@@ -1,7 +1,7 @@
 // Everything that knows about pixels. `game.ts` holds the rules and never
 // imports this file; this file holds the picture and never decides anything.
 
-import { MAX_GAP, PLATFORM_SIZE, type Platform } from "./game.ts";
+import { MAX_GAP, PLATFORM_REACH, PLATFORM_SIZE, type Platform } from "./game.ts";
 import { ISO_X, ISO_Y, type Point, iso } from "./iso.ts";
 import { comLift, renderPiece } from "./piece.ts";
 import type { Quat } from "./vec.ts";
@@ -186,6 +186,49 @@ function roundedPath(ctx: CanvasRenderingContext2D, pts: Point[], r: number): vo
     ctx.arcTo(corner.x, corner.y, to.x, to.y, r);
   }
   ctx.closePath();
+}
+
+/**
+ * The order to paint a run in: the blocks, far to near, and where the piece
+ * goes among them.
+ *
+ * Depth on the ground plane is `x + z`, and for two blocks that is the whole
+ * story. For the piece it is not, and the version this replaces got it wrong in
+ * a way that was visible in play and invisible to every check in the repo. It
+ * compared the piece's *landing point* against each block's *centre*, so any
+ * landing that went past the centre line — which is half of all of them — made
+ * the piece read as further away than the block it was standing on, and the
+ * block was painted over its feet. It lasted as long as the settle took to
+ * slide the piece back to the middle, about a quarter of a second, and then
+ * fixed itself, which is exactly the shape of thing you see and then doubt.
+ *
+ * The rule that is actually true: a piece standing on a block's top face is
+ * *above* it, and something on top of a box is painted after the box wherever
+ * on the box it stands. Ground depth only decides the blocks the piece is not
+ * standing on. `feet` is the height of the piece's lowest point above the play
+ * plane — it has to be at or above the top face for "standing on" to mean
+ * anything, or a piece that has been knocked off and is dropping past the side
+ * of a block would be painted in front of it.
+ */
+export function paintOrder<T extends { readonly x: number; readonly z: number }>(
+  blocks: readonly T[],
+  pieceX: number,
+  pieceZ: number,
+  feet: number,
+): { order: T[]; pieceAt: number } {
+  const order = [...blocks].sort((a, b) => b.x + b.z - (a.x + a.z));
+  const depth = pieceX + pieceZ;
+  const above = (block: T) =>
+    feet >= -0.001 &&
+    Math.abs(pieceX - block.x) <= PLATFORM_REACH &&
+    Math.abs(pieceZ - block.z) <= PLATFORM_REACH;
+
+  // The piece goes before the first block that is both nearer the camera and
+  // not underneath it.
+  const first = order.findIndex(
+    (block) => !above(block) && block.x + block.z < depth,
+  );
+  return { order, pieceAt: first === -1 ? order.length : first };
 }
 
 /** How far a block's top face drops when it is squeezed by `squash`. */
