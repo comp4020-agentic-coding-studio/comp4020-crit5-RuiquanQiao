@@ -66,6 +66,14 @@ function boot(width = 1280, height = 800): Booted {
   const canvas = window.document.querySelector("canvas")!;
   Object.defineProperty(canvas, "clientWidth", { value: width });
   Object.defineProperty(canvas, "clientHeight", { value: height });
+  // Every *other* canvas gets nothing, quietly. The renderer hands the
+  // rasterised piece over on a scratch canvas it makes itself, and jsdom
+  // reports an unimplemented `getContext` through its virtual console — which,
+  // left to happen, floods vitest's log channel until the worker is torn down
+  // mid-flush and the run fails with every test passing. Returning null is also
+  // what the renderer is written to expect: no canvas, nothing drawn.
+  window.HTMLCanvasElement.prototype.getContext = (() =>
+    null) as unknown as HTMLCanvasElement["getContext"];
   canvas.getContext = stubContext as unknown as HTMLCanvasElement["getContext"];
 
   // The two browser APIs the entry path reads that jsdom does not provide.

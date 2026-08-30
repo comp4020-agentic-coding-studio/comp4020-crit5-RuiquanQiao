@@ -292,17 +292,27 @@ export interface Pose {
  */
 let scratch: HTMLCanvasElement | null = null;
 let scratchCtx: CanvasRenderingContext2D | null = null;
+/** Whether the two above have been worked out yet. A *resolved* null is final. */
+let scratchResolved = false;
 
-function scratchFor(w: number, h: number): CanvasRenderingContext2D | null {
-  if (typeof document === "undefined") return null;
-  scratch ??= document.createElement("canvas");
-  if (!scratch) return null;
-  if (scratch.width < w || scratch.height < h) {
-    scratch.width = Math.max(scratch.width, w);
-    scratch.height = Math.max(scratch.height, h);
-    scratchCtx = null;
-  }
-  scratchCtx ??= scratch.getContext("2d");
+/**
+ * The scratch context, decided once and for all on the first call.
+ *
+ * "Once" is load-bearing rather than tidy. Asking a canvas for a context it
+ * cannot give is not free in jsdom: it reports "Not implemented" through the
+ * virtual console every single time. Written as `scratchCtx ??= ...` this asked
+ * again on every frame, so the boot test — which runs the real frame loop —
+ * emitted hundreds of them, and vitest tore its worker down mid-flush with
+ * "Closing rpc while onUserConsoleLog was pending". Every test passed and the
+ * run failed. Locally it never tripped; CI did, which is the worst place to
+ * find out.
+ */
+function scratchContext(): CanvasRenderingContext2D | null {
+  if (scratchResolved) return scratchCtx;
+  scratchResolved = true;
+  scratch = typeof document === "undefined" ? null : document.createElement("canvas");
+  scratchCtx = scratch?.getContext("2d") ?? null;
+  if (!scratchCtx) scratch = null;
   return scratchCtx;
 }
 
@@ -320,12 +330,20 @@ export function drawFigure(
   pose: Pose,
   pxScale: number,
 ): void {
+  // Before rasterising, not after. With no canvas to hand the result to there
+  // is nothing to do with it, and the rasteriser is the expensive part.
+  const off = scratchContext();
+  if (!off) return;
+
   const shot = renderPiece({ q: pose.q, squash: pose.squash }, pxScale);
   const { w, h, rgba } = shot.image;
   if (w <= 0 || h <= 0) return;
 
-  const off = scratchFor(w, h);
-  if (!off) return;
+  const surface = off.canvas;
+  if (surface.width < w || surface.height < h) {
+    surface.width = Math.max(surface.width, w);
+    surface.height = Math.max(surface.height, h);
+  }
 
   // Wipe a margin beyond the image before writing it.
   //

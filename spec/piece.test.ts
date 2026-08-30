@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FIGURE_HEIGHT } from "../mesh.ts";
 import { UPRIGHT, isoVector, tumbleUp } from "../iso.ts";
 import { comLift, deform, orientationFor, renderPiece } from "../piece.ts";
+import { fitScale } from "../render.ts";
 import { type Vertex, clear, downsample, surface, triangle } from "../raster.ts";
 import { QID, mulMV, qToMat } from "../vec.ts";
 
@@ -188,6 +189,26 @@ describe("the rendered piece", () => {
     expect(stretched.height).toBeGreaterThan(rest.height);
     // And the numbers are the ones the blocks deform by, not a second set.
     expect(deform(1).tall).toBeCloseTo(0.58, 10);
+  });
+
+  it("renders at the scale each marking viewport actually asks for", () => {
+    // `drawFigure` bails before rasterising when there is no canvas to hand the
+    // result to, which is every jsdom run — so the boot test no longer exercises
+    // the renderer end to end, and this is what replaces that. The scales are
+    // the ones `main.ts` computes: the fitted scale times the device pixel
+    // ratio, at both sizes the work is marked at.
+    for (const [name, width, height, dpr] of [
+      ["desktop 1920x1080 @1x", 1920, 1080, 1],
+      ["desktop 1920x1080 @2x", 1920, 1080, 2],
+      ["phone 390x844 @3x", 390, 844, 3],
+    ] as const) {
+      const shot = renderPiece({ q: orientationFor(1, 0, 0), squash: 0 }, fitScale(width, height) * dpr);
+      const { covered, height: tall } = measure(shot.image);
+      expect(covered, `${name} rendered nothing`).toBeGreaterThan(500);
+      // Below about 40 device pixels the piece stops resolving and reads as a
+      // pin, which is the same floor `spec/viewports.test.ts` holds.
+      expect(tall, `${name} rendered ${tall}px tall`).toBeGreaterThan(40);
+    }
   });
 
   it("draws nothing rather than allocating forever for an impossible pose", () => {
