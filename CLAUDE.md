@@ -31,6 +31,14 @@ under exactly that name are deployment prerequisites, not marking extras.
 
 These are the ones that have already caught something. They come forward.
 
+- **If you cannot look at it without a browser, you cannot look at it.** The
+  renderer for the piece fills a plain `Uint8ClampedArray` rather than drawing
+  onto a canvas, and `scripts/png.ts` turns one into a PNG. That is what makes
+  `scripts/preview-piece.ts` and `scripts/preview-fall.ts` possible: the real
+  renderer, at an exact scale, off an explicit pose, in Node, writing a file.
+  The first picture it produced had three faults in it that a browser would have
+  shown slowly and a test suite would not have shown at all. Anything new that
+  draws goes on the same side of that line.
 - **If the preview tool can lie about it, compute it.** The pane renders at its
   own physical size, and a pane that is not on screen stops compositing — so
   `resize` never reaches the page and `requestAnimationFrame` throttles to about
@@ -74,6 +82,10 @@ These are the ones that have already caught something. They come forward.
   It has three outcomes, not two: a hold too weak to leave the block is a
   `stay`, not a loss. Adding a second liveness check somewhere else would pass
   the build and break the one spec line the game is built around.
+- **Blocks squash about their base; the piece squashes about its feet — but it
+  *rotates* about its centre of mass.** `renderPiece` draws about the centre of
+  mass and the caller says where that is; `comAbove` converts from the feet for
+  the phases that track those instead.
 - **Blocks squash about their base; the piece squashes about its feet.** So a
   block's squash moves its top face, and anything standing on it has to move by
   `sinkOf()` too or it wades. This is why the block's impact amplitude is a
@@ -87,10 +99,37 @@ These are the ones that have already caught something. They come forward.
 - **No instructions anywhere, on screen or off** — including `README.md`, which
   the brief names explicitly. The opening screen's attract hop is the tutorial:
   the piece compresses and springs in place until the first real jump.
+- **The piece is a mesh, and the rule is a point. That is a real contradiction
+  and `mesh.CONTACT_RADIUS` is where it is resolved.** `resolveLanding` decides
+  on the centre of the landing; a base with a radius means a jump scored as a
+  miss can still have rim over the block, and at the drawn radius of 22 it
+  skated on and stood up on the block it had missed. Nine units keeps the
+  near-miss clip and keeps the disagreement smaller than the piece. Do not
+  reach for the friction or the restitution when a fall looks wrong at an edge —
+  every setting of those fixes one case and breaks another, which is the shape
+  of a parameter that is not the problem.
+- **Nothing in `physics.ts` decides anything.** It animates a decision
+  `resolveLanding` already took. `spec/body.test.ts` walks every miss the
+  generator can produce and asserts each one finishes below the play plane; if
+  that goes red, the picture has started contradicting the rule.
+- **The solver runs at a fixed 1/240s substep, whatever the display does.** A
+  rim that clips an edge at 144Hz is already past it by the first sample at
+  30Hz. This is the same lesson `smoothing` had to learn, somewhere it changes
+  the outcome rather than the speed.
+- **Light per vertex, not per corner, and check `dot(L, view) > 0`.** A light
+  can satisfy "above" and "screen-left" and still sit behind the piece: `iso`
+  sends `+z` up-and-left on screen, and `+z` is also away from the camera.
+- **Verify the winding by measuring it, per part.** A whole-mesh volume check
+  passes when two parts are both inside out, because the errors cancel.
 - **Draw the piece in the depth order, not on top.** Depth on the ground plane
   is `x + z`; blocks at least as far away as the piece go first, nearer ones
   after. Drawn last, an overshooting piece sails across the front of the block
   it just flew *behind*.
+- **Read the fall as numbers first.** `node scripts/preview-fall.ts [hold]
+  [seed]` prints position, speed, spin, how far the lowest contact point is into
+  a block, and how many substeps resolved a contact, and then writes a filmstrip
+  with the blocks drawn in. `node scripts/sweep-falls.ts` walks every miss on
+  several seeds and reports any that finishes on top of something.
 - **To see motion, use `window.__jump.shoot()`.** A screenshot of a running
   game is one pose, and the pane throttles `requestAnimationFrame` to about
   1fps, so neither tool can show an animation. `shoot(name, holdMs, opts)`

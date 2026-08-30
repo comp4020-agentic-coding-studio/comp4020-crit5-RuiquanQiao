@@ -2,32 +2,55 @@
 
 ## What was the breakthrough that moved the work forward?
 
-Writing the losing rule and its test before there was a game to lose.
+Building the thing I needed in order to *see* the thing I was making.
 
-The obvious order is to build the thing and then reach into it for something
-testable, and with a canvas game that means jsdom and synthetic pointer events —
-a test of the plumbing, not of the rule. So `game.ts` went first, with no DOM
-and no clock in it, and `resolveLanding` came out as the only place that decides
-whether a run continues.
+Twice now the same shape of problem has cost me an afternoon. The preview pane
+renders at its own physical size and throttles animation to about 1fps, so for
+most of a session I was arguing about an animation from a still frame at an
+unknown scale — and the whole time every animation was running through the
+reduced-motion path, because that browser has the setting on. Nothing was red.
+Everything looked fine. It was just wrong.
 
-The payoff arrived later and somewhere else. Every part of this game I could not
-measure by looking at it — the framing at 390×844, the shape of an impact, the
-trajectory of a jump — I could hand to a test, because the first file had
-already established that none of it needs a browser.
+So when I replaced the piece with real geometry, I wrote the rasteriser to fill
+a plain array instead of drawing onto a canvas. That one decision means a script
+can run the same renderer in Node and write me a PNG. The first picture it gave
+me had three separate faults in it — the mesh was inside out, the head had been
+rounded the wrong way and inflated into a blob, and the key light was sitting
+behind the piece lighting the side I could not see. I would not have found any
+of them by staring at test output, and I would not have found them quickly in a
+browser either.
+
+The instrument is not a detour from the work. It is the part of the work that
+decides how fast everything after it goes.
 
 ## What did this work change about who I want to be as a software developer?
 
-I want to write the test in the units that failed.
+I want to notice when I am tuning a number to hide a disagreement.
 
-The landing felt like a cut, and my first fix made it worse in a way I could not
-see: it removed the discontinuity and quietly halved the impact. The assertion
-that caught it was about the curve in the abstract. Its replacement says the
-tallest block's top face may not move more than 8px between two frames — actual
-pixels, at the marking scale. That one would have caught the original bug too.
+The fall used to be a parabola with a spin bolted on, and it had a fudge in it:
+if the landing came within 22 units of an edge, damp the drift to 0.45 and
+multiply the spin by 2.4. That is not physics, it is an impression of physics,
+and it was applied whether or not the piece went near an edge. Replacing it with
+an actual rigid-body solver felt like the honest thing to do — and it
+immediately produced something worse. A jump the rule had scored as a miss put
+its toe on the block's far edge, skated forward on its own momentum, and came to
+rest standing on the block it had failed to reach. The game said I had lost and
+the picture said I had not.
 
-And I want to make sure I can see a thing before spending an afternoon tuning
-it. When I finally built a way to watch the animation frame by frame, the first
-strip showed no rotation and a camera that jumped — not from anything I had just
-written, but because the browser had reduce-motion on and every animation here
-had been rendering through the degraded path all session. Two rounds of tuning
-went into a path nobody was looking at. The instrument should have come first.
+I spent a while on the coefficients. More friction stopped the piece dead in one
+frame and left it balanced upright on the edge for a fifth of a second, which
+reads as a freeze. Less friction let it skate on again. More bounce launched it
+onto the block from above. Every setting fixed one case and broke another,
+which in hindsight is exactly what it looks like when the parameter is not the
+problem.
+
+The problem was that the rule treats a landing as a single point and the piece
+is a solid with a base twenty-two units wide. Those two things cannot both be
+right at the edge, and no coefficient reconciles them. Shrinking the contact
+ring to nine units did, because it makes the disagreement smaller than the piece
+— and then the property could be stated and checked rather than eyeballed:
+every one of the 317 misses the generator can produce now ends below the plane
+the blocks sit on.
+
+The lesson I want to keep is the order. When something looks wrong, find out
+which two things are contradicting each other before touching a constant.
