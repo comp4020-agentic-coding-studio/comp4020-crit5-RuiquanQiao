@@ -96,6 +96,15 @@ These are the ones that have already caught something. They come forward.
   frame.
 - **Smoothing is a rate over elapsed time, never a per-frame constant.** As a
   constant the camera panned 2.4x faster at 144Hz than at 60Hz.
+- **The run is endless on purpose, and losing *is* the ending. Do not add a win
+  condition.** The spec says "it can be lost: a wrong move is possible, and play
+  ends somewhere — a win, a loss or a finish", and a loss is one of the three it
+  names; a stranger reaches that ending within about thirty seconds, well inside
+  the five minutes it asks for. This was read against the brief and decided
+  deliberately on 30 Aug, not left undone. A score cap would remove endless play
+  to satisfy a requirement that is already met, which is trading a capability
+  away for nothing. `spec/game.test.ts` opens by quoting the spec line it
+  answers, which is where that argument lives if it is ever questioned.
 - **No instructions anywhere, on screen or off** — including `README.md`, which
   the brief names explicitly. The opening screen's attract hop is the tutorial:
   the piece compresses and springs in place until the first real jump.
