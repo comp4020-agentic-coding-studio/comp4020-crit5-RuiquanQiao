@@ -23,6 +23,13 @@ browser either.
 The instrument is not a detour from the work. It is the part of the work that
 decides how fast everything after it goes.
 
+And then it failed to catch one, which is the other half of the lesson. Playing
+the finished build, I saw a block paint over the piece's feet for a quarter of a
+second after landing and then stop. The instrument renders exactly those frames
+and I had looked at dozens of them without noticing, because the fault heals
+itself and what you see is a flicker you then doubt. A tool that shows you
+everything still needs someone who knows what wrong looks like.
+
 ## What did this work change about who I want to be as a software developer?
 
 I want to notice when I am tuning a number to hide a disagreement.
@@ -53,4 +60,10 @@ every one of the 317 misses the generator can produce now ends below the plane
 the blocks sit on.
 
 The lesson I want to keep is the order. When something looks wrong, find out
-which two things are contradicting each other before touching a constant.
+which two things are contradicting each other before touching a constant. The
+painter's order turned out to be the same shape of problem in miniature: the
+piece's landing point was being compared against a block's centre, two things
+that are not comparable, and no amount of nudging the comparison would have
+fixed it. What fixed it was writing down the rule — something standing on a box
+is painted after the box — and then it was a function with tests instead of a
+line of arithmetic nobody could check.

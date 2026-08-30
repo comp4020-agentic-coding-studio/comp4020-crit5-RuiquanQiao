@@ -19,18 +19,19 @@ jsdom and synthetic pointer events — a test of the plumbing, not the rule. So
 only place that decides whether a run continues. That is why a rigid-body solver
 could be dropped in later without the rule moving an inch.
 
-**The first fix for the landing made it worse, and a test in the wrong units let
-it through.**
-[`c13ed7b...4af7cef`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-RuiquanQiao/compare/c13ed7b...4af7cef)
-The impact curve was a damped cosine, so it began at full compression on the
-frame of contact, and a squeezed block loses height off its top: the top face
-and the piece on it dropped 32.1px in one frame. Damping the cosine with a rise
-ramp removed the discontinuity and halved the impact — the ramp's time constant
-and the cosine's quarter period were within a factor of two, so it ate the first
-peak, 1.0 down to 0.32, and left the rebound alone. A damped sine starts at zero
-because a sine does. The assertion that let the bad fix through was about the
-curve in the abstract; its replacement is in the units that failed — tallest
-block, larger marking scale, no more than 8px of top-face movement per frame.
+**Only playing found the one that heals itself.**
+[`08289fb`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-RuiquanQiao/commit/08289fb)
+A block painted over the piece's feet for a quarter of a second after landing,
+then stopped. I had looked at dozens of rendered frames without seeing it: it
+heals itself, so what you notice is a flicker you then doubt. The order compared
+the piece's landing *point* against each block's *centre*, both as points on the
+ground with height ignored, so any landing past the centre line — half of them —
+read as further away than the block it stood on. The fix is not a better
+comparison. Something on top of a box is painted after the box wherever it
+stands; ground depth only orders the blocks it is *not* on. That is a rule, so
+it is a function with seven cases under test. The same shape of fault, caught
+earlier and by measuring rather than playing, is at
+[`c13ed7b...4af7cef`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-RuiquanQiao/compare/c13ed7b...4af7cef).
 
 **A renderer I could run without a browser found three errors in one picture.**
 [`5f9fa04`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-RuiquanQiao/commit/5f9fa04)

@@ -121,6 +121,15 @@ These are the ones that have already caught something. They come forward.
   sends `+z` up-and-left on screen, and `+z` is also away from the camera.
 - **Verify the winding by measuring it, per part.** A whole-mesh volume check
   passes when two parts are both inside out, because the errors cancel.
+- **The painter's order is a rule, not a comparison, and it lives in
+  `paintOrder`.** Something standing on a block's top face is *above* it and is
+  painted after it wherever on the face it stands; ground depth (`x + z`) only
+  orders the blocks the piece is not on, and the height of its lowest point is
+  what tells the two cases apart. Comparing the piece's landing point against a
+  block's centre — which is what this did — paints the block over the piece's
+  feet for any landing past the centre line, heals itself over the settle, and
+  is invisible to every check in the repo. It was found by playing. Do not
+  reintroduce a bare depth comparison here.
 - **Draw the piece in the depth order, not on top.** Depth on the ground plane
   is `x + z`; blocks at least as far away as the piece go first, nearer ones
   after. Drawn last, an overshooting piece sails across the front of the block
